@@ -1,0 +1,3 @@
+
+test:
+	rm -f mpitest.out; srun -o mpitest.out -n 3 -A cli133 -t 00:10:00 -p ecp ./mpi_test

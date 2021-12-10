@@ -3,7 +3,7 @@ import os, sys, argparse, time, math, numpy
 
 NX = 100            # number of local grid cells in the x-dimension
 NZ = 50             # number of local grid cells in the z-dimension
-SIM_TIME = 1000     # total simulation time in seconds
+SIM_TIME = 10     # total simulation time in seconds
 OUT_FREQ = 10       # frequency to perform output in seconds
 DATA_SPEC = "DATA_SPEC_THERMAL" # which data initialization to use
 NUM_VARS = 4        # number of fluid state variables
@@ -67,20 +67,14 @@ class LocalDomain():
         self.dt = min(self.dx, self.dz) / self.max_speed * self.cfl
 
         state_shape = (self.nx + self.hs*2, self.nz + self.hs*2, NUM_VARS)
-        self._state = numpy.zeros(state_shape, order="F", dtype=numpy.float64)
-        self.state = self._state[self.hs:self.nx+self.hs, self.hs:self.nz+self.hs, :]
-        #self.lhalo = self._state[:self.hs, self.hs:self.nz+self.hs, :]
-        #self.rhalo = self._state[self.nx+self.hs:self.nx+2*self.hs, self.hs:self.nz+self.hs, :]
-        self._state_tmp = numpy.empty(state_shape, order="F", dtype=numpy.float64)
-        self.state_tmp = self._state_tmp[self.hs:self.nx+self.hs, self.hs:self.nz+self.hs, :]
+        self.state = numpy.zeros(state_shape, order="F", dtype=numpy.float64)
+        self.state_tmp = numpy.empty(state_shape, order="F", dtype=numpy.float64)
 
         self.flux = numpy.zeros((self.nx+1, self.nz+1, NUM_VARS), order="F", dtype=numpy.float64)
         self.tend = numpy.zeros((self.nx, self.nz, NUM_VARS), order="F", dtype=numpy.float64)
 
-        self._hy_dens_cell = numpy.zeros(self.nz+self.hs*2, dtype=numpy.float64)
-        self.hy_dens_cell = self._hy_dens_cell[self.hs:self.nz+self.hs]
-        self._hy_dens_theta_cell = numpy.zeros(self.nz+self.hs*2, dtype=numpy.float64)
-        self.hy_dens_theta_cell = self._hy_dens_theta_cell[self.hs:self.nz+self.hs]
+        self.hy_dens_cell = numpy.zeros(self.nz+self.hs*2, dtype=numpy.float64)
+        self.hy_dens_theta_cell = numpy.zeros(self.nz+self.hs*2, dtype=numpy.float64)
 
         self.hy_dens_int = numpy.empty(self.nz+1, dtype=numpy.float64)
         self.hy_dens_theta_int = numpy.empty(self.nz+1, dtype=numpy.float64)
@@ -110,17 +104,17 @@ class LocalDomain():
                         elif self.data_spec_int == "DATA_SPEC_THERMAL": 
                             r, u, w, t, hr, ht = self.thermal(x, z)
 
-                        self._state[i, k, self.ID_DENS] = (self._state[i, k, self.ID_DENS] + 
+                        self.state[i, k, self.ID_DENS] = (self.state[i, k, self.ID_DENS] + 
                                     r * self.qweights[ii] * self.qweights[kk])
-                        self._state[i, k, self.ID_UMOM] = (self._state[i, k, self.ID_UMOM] + 
+                        self.state[i, k, self.ID_UMOM] = (self.state[i, k, self.ID_UMOM] + 
                                     (r+hr)*u * self.qweights[ii] * self.qweights[kk])
-                        self._state[i, k, self.ID_WMOM] = (self._state[i, k, self.ID_WMOM] + 
+                        self.state[i, k, self.ID_WMOM] = (self.state[i, k, self.ID_WMOM] + 
                                     (r+hr)*w * self.qweights[ii] * self.qweights[kk])
-                        self._state[i, k, self.ID_RHOT] = (self._state[i, k, self.ID_RHOT] + 
+                        self.state[i, k, self.ID_RHOT] = (self.state[i, k, self.ID_RHOT] + 
                                     ((r+hr)*(t+ht) - hr*ht) * self.qweights[ii] * self.qweights[kk])
 
                 for ll in range(NUM_VARS):
-                    self._state_tmp[i,k,ll] = self._state[i,k,ll]
+                    self.state_tmp[i,k,ll] = self.state[i,k,ll]
 
         # Compute the hydrostatic background state over vertical cell averages
         for k in range(self.nz+self.hs*2):
@@ -131,8 +125,8 @@ class LocalDomain():
                 elif self.data_spec_int == "DATA_SPEC_THERMAL": 
                     r, u, w, t, hr, ht = self.thermal(0., z)
 
-                self._hy_dens_cell[k]       += hr * self.qweights[kk]
-                self._hy_dens_theta_cell[k] += hr*ht * self.qweights[kk]
+                self.hy_dens_cell[k]       += hr * self.qweights[kk]
+                self.hy_dens_theta_cell[k] += hr*ht * self.qweights[kk]
 
         # Compute the hydrostatic background state at vertical cell interfaces
         for k in range(self.nz+1):
@@ -236,10 +230,10 @@ class LocalDomain():
                 # Compute density, u-wind, w-wind, potential temperature,
                 # and pressure (r,u,w,t,p respectively)
 
-                r = self.vals[self.ID_DENS] + self._hy_dens_cell[k+self.hs]
+                r = self.vals[self.ID_DENS] + self.hy_dens_cell[k+self.hs]
                 u = self.vals[self.ID_UMOM] / r
                 w = self.vals[self.ID_WMOM] / r
-                t = (self.vals[self.ID_RHOT] + self._hy_dens_theta_cell[k+self.hs] ) / r
+                t = (self.vals[self.ID_RHOT] + self.hy_dens_theta_cell[k+self.hs] ) / r
                 p = self.c0*((r*t)**self.gamma)
 
                 #if numpy.isnan(p):
@@ -256,10 +250,10 @@ class LocalDomain():
                 for i in range(self.nx):
                     self.tend[i, k, ll] = -(self.flux[i+1, k, ll] - self.flux[i, k, ll]) / self.dx
 
-#        print("_state sum: ", self._state.sum())
-#        print("_state_tmp sum: ", self._state_tmp.sum())
-#        print("_hy_dens_cell sum: ", self._hy_dens_cell.sum())
-#        print("_hy_dens_theta_cell sum: ", self._hy_dens_theta_cell.sum())
+#        print("_state sum: ", self.state.sum())
+#        print("_state_tmp sum: ", self.state_tmp.sum())
+#        print("_hy_dens_cell sum: ", self.hy_dens_cell.sum())
+#        print("_hy_dens_theta_cell sum: ", self.hy_dens_theta_cell.sum())
 #        print("hy_dens_int sum: ", self.hy_dens_int.sum())
 #        print("hy_dens_theta_int sum: ", self.hy_dens_theta_int.sum())
 #        print("hy_pressure_int sum: ", self.hy_pressure_int.sum())
@@ -290,37 +284,37 @@ class LocalDomain():
 
         if direction_switch:
             # x direction first
-            self.semi_discrete_step(self._state, self._state, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state, self.state_tmp,
                                     self.dt / 3., self.DIR_X)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state_tmp,
                                     self.dt / 2., self.DIR_X)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state,
                                     self.dt / 1., self.DIR_X)
 
             # z direction second
-            self.semi_discrete_step(self._state, self._state, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state, self.state_tmp,
                                     self.dt / 3., self.DIR_Z)
 
-            self.semi_discrete_step(self._state, self._state_tmp, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state_tmp,
                                     self.dt / 2., self.DIR_Z)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state,
                                     self.dt / 1., self.DIR_Z)
 
         else:
             # z direction first
-            self.semi_discrete_step(self._state, self._state, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state, self.state_tmp,
                                     self.dt / 3., self.DIR_Z)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state_tmp,
                                     self.dt / 2., self.DIR_Z)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state,
                                     self.dt / 1., self.DIR_Z)
 
             # x direction second
-            self.semi_discrete_step(self._state, self._state, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state, self.state_tmp,
                                     self.dt / 3., self.DIR_X)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state_tmp,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state_tmp,
                                     self.dt / 2., self.DIR_X)
-            self.semi_discrete_step(self._state, self._state_tmp, self._state,
+            self.semi_discrete_step(self.state, self.state_tmp, self.state,
                                     self.dt / 1., self.DIR_X)
 
     def reductions(self):
@@ -330,10 +324,10 @@ class LocalDomain():
 
         for k in range(self.nz):
             for i in range(self.nx):
-                r = self._state[i+self.hs, k+self.hs, self.ID_DENS] + self._hy_dens_cell[k+self.hs] # density
-                u = self._state[i+self.hs, k+self.hs, self.ID_UMOM] / r # u-wind
-                w = self._state[i+self.hs, k+self.hs, self.ID_WMOM] / r # v-wind
-                th = (self._state[i+self.hs, k+self.hs, self.ID_RHOT] + self._hy_dens_theta_cell[k+self.hs]) / r # potential temperature (theta)
+                r = self.state[i+self.hs, k+self.hs, self.ID_DENS] + self.hy_dens_cell[k+self.hs] # density
+                u = self.state[i+self.hs, k+self.hs, self.ID_UMOM] / r # u-wind
+                w = self.state[i+self.hs, k+self.hs, self.ID_WMOM] / r # v-wind
+                th = (self.state[i+self.hs, k+self.hs, self.ID_RHOT] + self.hy_dens_theta_cell[k+self.hs]) / r # potential temperature (theta)
                 p = self.c0 * (r * th)**self.gamma # pressure
                 t = th / (self.p0/p)**(self.rd/self.cp) # temperature
                 ke = r * (u*u*w*w) # kinetic energy
@@ -382,14 +376,19 @@ class LocalDomain():
 
         for k in range(self.nz):
             for i in range(self.nx):
-                self.dens[i, k] = self._state[i+self.hs, k+self.hs, self.ID_DENS]
-                self.uwnd[i, k] = (self._state[i+self.hs, k+self.hs, self.ID_UMOM] /
-                                (self._hy_dens_cell[k+self.hs] + self._state[i+self.hs,k+self.hs,self.ID_DENS]))
-                self.wwnd[i, k] = (self._state[i+self.hs, k+self.hs, self.ID_WMOM] /
-                                (self._hy_dens_cell[k+self.hs] + self._state[i+self.hs,k+self.hs,self.ID_DENS]))
-                self.theta[i, k] = ((self._state[i+self.hs, k+self.hs, self.ID_RHOT] + self._hy_dens_theta_cell[k+self.hs]) /
-                                (self._hy_dens_cell[k+self.hs] + self._state[i+self.hs,k+self.hs,self.ID_DENS]) -
-                                self._hy_dens_theta_cell[k+self.hs] / self._hy_dens_cell[k+self.hs])
+                self.dens[i, k] = self.state[i+self.hs, k+self.hs, self.ID_DENS]
+                self.uwnd[i, k] = (self.state[i+self.hs, k+self.hs, self.ID_UMOM] /
+                                (self.hy_dens_cell[k+self.hs] +
+                                 self.state[i+self.hs,k+self.hs,self.ID_DENS]))
+                self.wwnd[i, k] = (self.state[i+self.hs, k+self.hs, self.ID_WMOM] /
+                                (self.hy_dens_cell[k+self.hs] +
+                                 self.state[i+self.hs,k+self.hs,self.ID_DENS]))
+                self.theta[i, k] = ((self.state[i+self.hs, k+self.hs, self.ID_RHOT] +
+                                self.hy_dens_theta_cell[k+self.hs]) /
+                                (self.hy_dens_cell[k+self.hs] +
+                                self.state[i+self.hs,k+self.hs,self.ID_DENS]) -
+                                self.hy_dens_theta_cell[k+self.hs] /
+                                self.hy_dens_cell[k+self.hs])
 
         print("sum dens = %f" % self.dens.sum())
         print("sum uwnd = %f" % self.uwnd.sum())

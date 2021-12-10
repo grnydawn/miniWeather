@@ -1,2 +1,5 @@
 venv3summit
 venv3spock
+__pycache__
+*.out
+*.sav
