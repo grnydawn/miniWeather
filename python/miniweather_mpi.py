@@ -4,8 +4,8 @@ import simpdf
 
 NX = 100 # 2000 # 100            # number of local grid cells in the x-dimension
 NZ = 50 # 1000 # 50             # number of local grid cells in the z-dimension
-SIM_TIME = 100 # 5 # 10     # total simulation time in seconds
-OUT_FREQ = 1 # 5 # 10       # frequency to perform output in seconds
+SIM_TIME = 10 # 5 # 10     # total simulation time in seconds
+OUT_FREQ = 5 # 5 # 10       # frequency to perform output in seconds
 DATA_SPEC = "DATA_SPEC_THERMAL" # which data initialization to use
 NUM_VARS = 4        # number of fluid state variables
 
@@ -518,6 +518,7 @@ def main():
         print("d_te: %f" % ((te - te0)/te0))
 
     domain.spdf.close()
+
 
 if __name__ == "__main__":
     sys.exit(main())
