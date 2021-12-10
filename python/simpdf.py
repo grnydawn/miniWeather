@@ -1,7 +1,8 @@
 import os, io, time, uuid, json, pickle, numpy
 
 _EXT = ".spdf"   
-_MAX_WAIT = 10
+_ZIPEXT = ".spzf"   
+_MAX_WAIT = 10 # seconds
 _CONFIG_FILE = "config"
 _CONFIG_INIT = {
     "version": 1,
@@ -16,17 +17,18 @@ _CONFIG_INIT = {
 
 UNLIMITED = -1
 
-class Dimension():
+
+class DimensionWriter():
 
     def __init__(self, name, conf):
         self.name = name
         self.conf = conf
 
 
-class Order(Dimension):
+class OrderWriter(DimensionWriter):
     pass
 
-class Variable():
+class VariableWriter():
 
     def __init__(self, path, name, conf):
 
@@ -69,7 +71,7 @@ class Variable():
             pickle.dump(var, fp)
 
 
-class SimpleParallelDataFormat():
+class SimpleParallelDataFormatWriter():
 
     def __init__(self, path, mode, config, archive):
 
@@ -77,66 +79,49 @@ class SimpleParallelDataFormat():
         self.uuid = str(uuid.uuid4())
         self.path = os.path.join(self.root, self.uuid)
         self.mode = mode
-        self.config = config
+        self.configpath = config
         self.archive = archive
 
-        os.makedirs(self.path)
+        with io.open(self.configpath, "r") as fp:
+            self.config = json.load(fp)
+
+        if mode == "r":
+            os.makedirs(self.path)
 
     def get_dimdef(self, name):
-
-        with io.open(self.config, "r") as fp:
-            cfg = json.load(fp)
-            dim = cfg["dims"][name]
-            return Dimension(name, dim)
+        return DimensionWriter(name, self.config["dims"][name])
 
     def get_vardef(self, name):
-
-        with io.open(self.config, "r") as fp:
-            cfg = json.load(fp)
-            var = cfg["vars"][name]
-            return Variable(self.path, name, var)
+        return VariableWriter(self.path, name, self.config["vars"][name])
 
     def close(self):
         pass
         # may coordinate with master
 
 
-class MasterSimpleParallelDataFormat(SimpleParallelDataFormat):
+class MasterSimpleParallelDataFormatWriter(SimpleParallelDataFormatWriter):
 
     def begin(self):
  
-        with io.open(self.config, "r+") as fp:
-            cfg = json.load(fp)
-            cfg["__control__"]["master"] = {self.uuid: None}
-            fp.seek(0)
-            json.dump(cfg, fp)
+        self.config["__control__"]["master"] = {self.uuid: None}
+
+        with io.open(self.configpath, "w") as fp:
+            json.dump(self.config, fp)
             os.fsync(fp.fileno())
        
     def define_dim(self, name, size, desc):
 
         dim = {"size": size, "desc": desc}
+        self.config["dims"][name] = dim
 
-        with io.open(self.config, "r+") as fp:
-            cfg = json.load(fp)
-            cfg["dims"][name] = dim
-            fp.seek(0)
-            json.dump(cfg, fp)
-            os.fsync(fp.fileno())
-
-        return Dimension(name, dim)
+        return DimensionWriter(name, dim)
 
     def define_order(self, name, size, desc):
 
         order = {"size": size, "desc": desc}
+        self.config["orders"][name] = order
 
-        with io.open(self.config, "r+") as fp:
-            cfg = json.load(fp)
-            cfg["orders"][name] = order
-            fp.seek(0)
-            json.dump(cfg, fp)
-            os.fsync(fp.fileno())
-
-        return Order(name, order)
+        return OrderWriter(name, order)
 
     def define_var(self, name, shape, order=None, desc=None):
 
@@ -153,15 +138,9 @@ class MasterSimpleParallelDataFormat(SimpleParallelDataFormat):
         _shape = [s.name for s in shape]
 
         var = {"shape": _shape, "orders": _orders, "desc": desc}
+        self.config["vars"][name] = var
 
-        with io.open(self.config, "r+") as fp:
-            cfg = json.load(fp)
-            cfg["vars"][name] = var
-            fp.seek(0)
-            json.dump(cfg, fp)
-            os.fsync(fp.fileno())
-
-        return Variable(self.path, name, var)
+        return VariableWriter(self.path, name, var)
 
     def close(self):
 
@@ -170,14 +149,11 @@ class MasterSimpleParallelDataFormat(SimpleParallelDataFormat):
         # archive if requested
         if self.archive:
             pass
- 
-        with io.open(self.config, "r") as fp:
-            cfg = json.load(fp)
 
-        cfg["__control__"]["master"] = None
+        self.config["__control__"]["master"] = None
 
-        with io.open(self.config, "w") as fp:
-            json.dump(cfg, fp)
+        with io.open(self.configpath, "w") as fp:
+            json.dump(self.config, fp)
             os.fsync(fp.fileno())
 
 
@@ -185,7 +161,7 @@ def master_open(path, mode="r", archive=True, exist_ok=False):
 
     config = os.path.join(path, _CONFIG_FILE)
 
-    if mode[0] == "w":
+    if mode == "w":
         os.makedirs(path, exist_ok=exist_ok)
 
         for item in os.listdir(path):
@@ -202,7 +178,15 @@ def master_open(path, mode="r", archive=True, exist_ok=False):
     if not os.path.isfile(config):
         raise Exception("Target configuration does not exist: %s" % config)
 
-    return MasterSimpleParallelDataFormat(path, mode, config, archive)
+    if mode == "w":
+        return MasterSimpleParallelDataFormatWriter(path, mode, config, archive)
+
+    elif mode == "r":
+        return MasterSimpleParallelDataFormatReader(path, mode, config, archive)
+
+    else:
+        raise Exception("Unknown open mode: %s" % str(mode))
+
 
 def open(path, mode="r", archive=True):
 
@@ -232,6 +216,13 @@ def open(path, mode="r", archive=True):
             if cfg["__control__"]["master"] is None:
                 time.sleep(0.1)
                 continue
-            return SimpleParallelDataFormat(path, mode, config, archive)
+            if mode == "w":
+                return SimpleParallelDataFormatWriter(path, mode, config, archive)
+
+            elif mode == "r":
+                return SimpleParallelDataFormatReader(path, mode, config, archive)
+
+            else:
+                raise Exception("Unknown open mode: %s" % str(mode))
 
     raise Exception("Target configuration is not configured: %s" % config)
