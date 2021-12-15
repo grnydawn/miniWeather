@@ -1,20 +1,20 @@
 import os, sys
 
 import matplotlib.pyplot as plt
-import simpdf
+import pyslabs
 import numpy as np
-
-_data = "/gpfs/alpine/cli133/scratch/grnydawn/output"
 
 def main():
 
     # load
-    with simpdf.master_open(_data) as data:
+    with pyslabs.master_open(sys.argv[1]) as data:
 
         # process
-        dens = data.get_var("dens")
+        #dens_view = data.get_view("dens")
+        dens_array = data.get_array("dens")
+        #dens_view.write(dens_modified_array)
 
-        cs = plt.contourf(dens)
+        cs = plt.contourf(dens_array)
 #        x = np.arange(1, 10)
 #        y = x.reshape(-1, 1)
 #        h = x * y

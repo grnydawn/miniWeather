@@ -1,14 +1,13 @@
 import os, sys, argparse, time, math, numpy
+import pyslabs
 
-
-NX = 100            # number of local grid cells in the x-dimension
-NZ = 50             # number of local grid cells in the z-dimension
-SIM_TIME = 10     # total simulation time in seconds
-OUT_FREQ = 10       # frequency to perform output in seconds
+NX = 100 # 2000 # 100            # number of local grid cells in the x-dimension
+NZ = 50 # 1000 # 50             # number of local grid cells in the z-dimension
+SIM_TIME = 10 # 5 # 10     # total simulation time in seconds
+OUT_FREQ = 5 # 5 # 10       # frequency to perform output in seconds
 DATA_SPEC = "DATA_SPEC_THERMAL" # which data initialization to use
 NUM_VARS = 4        # number of fluid state variables
 
-    
 class LocalDomain():
     """a local domain that has spatial state and computation of the domain
     """
@@ -54,21 +53,38 @@ class LocalDomain():
 
     def __init__(self, nx_glob, nz_glob, data_spec):
 
-        self.nx_glob = nx_glob
-        self.nz_glob = nz_glob
-        self.nx = self.nx_glob # serial version only
-        self.nz = self.nz_glob # serial version only
+        self.nranks = 1
+        self.rank = 0
 
         self.data_spec_int = data_spec
+        self.nx_glob = nx_glob
+        self.nz_glob = nz_glob
+        self.nz = self.nz_glob
 
-        self.dx = self.xlen / self.nx_glob
-        self.dz = self.zlen / self.nz_glob
+        self.dx = self.xlen / nx_glob
+        self.dz = self.zlen / nz_glob
+
+        nper = float(nx_glob) / self.nranks
+        self.i_beg = round(nper * self.rank)
+        self.i_end = round(nper * (self.rank + 1))
+        self.nx = self.i_end - self.i_beg
+
+        self.left_rank = self.nranks-1 if self.rank==0 else self.rank-1
+        self.right_rank = 0 if self.rank==self.nranks-1 else self.rank+1
+
+        self.k_beg = 0
 
         self.dt = min(self.dx, self.dz) / self.max_speed * self.cfl
 
         state_shape = (self.nx + self.hs*2, self.nz + self.hs*2, NUM_VARS)
         self.state = numpy.zeros(state_shape, order="F", dtype=numpy.float64)
         self.state_tmp = numpy.empty(state_shape, order="F", dtype=numpy.float64)
+
+        buf_shape = (self.hs, self.nz, NUM_VARS)
+        self.sendbuf_l = numpy.empty(buf_shape, order="F", dtype=numpy.float64)
+        self.sendbuf_r = numpy.empty(buf_shape, order="F", dtype=numpy.float64)
+        self.recvbuf_l = numpy.empty(buf_shape, order="F", dtype=numpy.float64)
+        self.recvbuf_r = numpy.empty(buf_shape, order="F", dtype=numpy.float64)
 
         self.flux = numpy.zeros((self.nx+1, self.nz+1, NUM_VARS), order="F", dtype=numpy.float64)
         self.tend = numpy.zeros((self.nx, self.nz, NUM_VARS), order="F", dtype=numpy.float64)
@@ -89,14 +105,17 @@ class LocalDomain():
         self.wwnd = numpy.empty((self.nx, self.nz), dtype=numpy.float64)
         self.theta = numpy.empty((self.nx, self.nz), dtype=numpy.float64)
 
+        print("nx_glob=%d, nz_glob=%d" % (self.nx_glob, self.nz_glob))
+        print("dx=%f, dz=%f, dt=%f" % (self.dx, self.dz, self.dt))
+
         # Initialize the cell-averaged fluid state via Gauss-Legendre quadrature
         for k in range(self.nz+2*self.hs):
             for i in range(self.nx+2*self.hs):
                 for kk in range(self.nqpoints):
                     for ii in range(self.nqpoints):
-                        x = ((i - self.hs + 0.5) * self.dx + 
+                        x = ((self.i_beg + i - self.hs + 0.5) * self.dx + 
                                 (self.qpoints[ii] - 0.5) * self.dx)
-                        z = ((k - self.hs + 0.5) * self.dz + 
+                        z = ((self.k_beg + k - self.hs + 0.5) * self.dz + 
                                 (self.qpoints[kk] - 0.5) * self.dx)
 
                         if self.data_spec_int == "DATA_SPEC_COLLISION":
@@ -104,14 +123,11 @@ class LocalDomain():
                         elif self.data_spec_int == "DATA_SPEC_THERMAL": 
                             r, u, w, t, hr, ht = self.thermal(x, z)
 
-                        self.state[i, k, self.ID_DENS] = (self.state[i, k, self.ID_DENS] + 
-                                    r * self.qweights[ii] * self.qweights[kk])
-                        self.state[i, k, self.ID_UMOM] = (self.state[i, k, self.ID_UMOM] + 
-                                    (r+hr)*u * self.qweights[ii] * self.qweights[kk])
-                        self.state[i, k, self.ID_WMOM] = (self.state[i, k, self.ID_WMOM] + 
-                                    (r+hr)*w * self.qweights[ii] * self.qweights[kk])
-                        self.state[i, k, self.ID_RHOT] = (self.state[i, k, self.ID_RHOT] + 
-                                    ((r+hr)*(t+ht) - hr*ht) * self.qweights[ii] * self.qweights[kk])
+                        self.state[i, k, self.ID_DENS] += r * self.qweights[ii] * self.qweights[kk]
+                        self.state[i, k, self.ID_UMOM] += (r+hr)*u * self.qweights[ii] * self.qweights[kk]
+                        self.state[i, k, self.ID_WMOM] += (r+hr)*w * self.qweights[ii] * self.qweights[kk]
+                        self.state[i, k, self.ID_RHOT] += (((r+hr)*(t+ht) - hr*ht) * self.qweights[ii] *
+                                                            self.qweights[kk])
 
                 for ll in range(NUM_VARS):
                     self.state_tmp[i,k,ll] = self.state[i,k,ll]
@@ -119,7 +135,7 @@ class LocalDomain():
         # Compute the hydrostatic background state over vertical cell averages
         for k in range(self.nz+self.hs*2):
             for kk in range(self.nqpoints):
-                z = (k - 1.5) * self.dz + (self.qpoints[kk] -0.5) * self.dz
+                z = (self.k_beg + k - 1.5) * self.dz + (self.qpoints[kk] -0.5) * self.dz
                 if self.data_spec_int == "DATA_SPEC_COLLISION":
                     r, u, w, t, hr, ht = self.collision(0., z)
                 elif self.data_spec_int == "DATA_SPEC_THERMAL": 
@@ -130,7 +146,7 @@ class LocalDomain():
 
         # Compute the hydrostatic background state at vertical cell interfaces
         for k in range(self.nz+1):
-            z = k * self.dz
+            z = (self.k_beg + k) * self.dz
             if self.data_spec_int == "DATA_SPEC_COLLISION":
                 r, u, w, t, hr, ht = self.collision(0., z)
             elif self.data_spec_int == "DATA_SPEC_THERMAL": 
@@ -138,22 +154,30 @@ class LocalDomain():
 
             self.hy_dens_int[k]       = hr
             self.hy_dens_theta_int[k] = hr * ht
-            self.hy_pressure_int[k] = self.c0 * ((hr*ht)**self.gamma)
+            self.hy_pressure_int[k] = self.c0 * math.pow(hr*ht, self.gamma)
+
+        # create file
+
+        self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+
+        self.vdens = self.slabs.define_var("dens")
+        self.vuwnd = self.slabs.define_var("uwnd")
+        self.vwwnd = self.slabs.define_var("wwnd")
+        self.vtheta = self.slabs.define_var("theta")
+
+        self.slabs.begin()
 
     def set_halo_values_z(self, state):
 
         for ll in range(NUM_VARS):
             for i in range(self.nx+self.hs*2):
-                if ll == self.ID_WMOM:
-                    state[i, 0, ll] = 0.
-                    state[i, 1, ll] = 0.
-                    state[i, self.nz+self.hs, ll] = 0.
-                    state[i, self.nz+self.hs+1, ll] = 0.
-                else:
-                    state[i, 0, ll] = state[i, self.hs, ll]
-                    state[i, 1, ll] = state[i, self.hs, ll]
-                    state[i, self.nz+self.hs, ll] = state[i, self.nz+self.hs-1, ll]
-                    state[i, self.nz+self.hs+1, ll] = state[i, self.nz+self.hs-1, ll]
+                for h in range(self.hs):
+                    if ll == self.ID_WMOM:
+                        state[i, h, ll] = 0.
+                        state[i, -h, ll] = 0.
+                    else:
+                        state[i, h, ll] = state[i, self.hs, ll]
+                        state[i, -h, ll] = state[i, -self.hs, ll]
 
     def compute_tendencies_z(self, state):
         # Compute the hyperviscosity coeficient
@@ -181,10 +205,7 @@ class LocalDomain():
                 u = self.vals[self.ID_UMOM] / r
                 w = self.vals[self.ID_WMOM] / r
                 t = (self.vals[self.ID_RHOT] + self.hy_dens_theta_int[k] ) / r
-                p = self.c0*((r*t)**self.gamma) - self.hy_pressure_int[k]
-
-                if numpy.isnan(p):
-                    import pdb; pdb.set_trace()
+                p = self.c0*math.pow(r*t,self.gamma) - self.hy_pressure_int[k]
 
                 # Enforce vertical boundary condition and exact mass conservation
                 if k == 0 or k == self.nz:
@@ -203,11 +224,16 @@ class LocalDomain():
                     self.tend[i, k, ll] = -(self.flux[i, k+1, ll] - self.flux[i, k, ll]) / self.dz
                     if ll == self.ID_WMOM:
                         self.tend[i, k, self.ID_WMOM] = (self.tend[i, k, self.ID_WMOM] -
-                                        state[i, k, self.ID_DENS] * self.grav)
+                                        state[i+self.hs, k+self.hs, self.ID_DENS] * self.grav)
               
 
     def set_halo_values_x(self, state):
-        pass
+
+        for ll in range(NUM_VARS):
+            for k in range(self.nz):
+                for s in range(self.hs):
+                    state[s, k+self.hs, ll] = state[s-2*self.hs, k+self.hs, ll]
+                    state[self.nx+self.hs+s, k+self.hs, ll] = state[s+self.hs, k+self.hs, ll]
 
     def compute_tendencies_x(self, state):
         # Compute the hyperviscosity coeficient
@@ -234,10 +260,7 @@ class LocalDomain():
                 u = self.vals[self.ID_UMOM] / r
                 w = self.vals[self.ID_WMOM] / r
                 t = (self.vals[self.ID_RHOT] + self.hy_dens_theta_cell[k+self.hs] ) / r
-                p = self.c0*((r*t)**self.gamma)
-
-                #if numpy.isnan(p):
-                #    import pdb; pdb.set_trace()
+                p = self.c0*math.pow(r*t, self.gamma)
 
                 #Compute the flux vector
                 self.flux[i,k,self.ID_DENS] = r*u     - hv_coef*self.d3_vals[self.ID_DENS]
@@ -250,25 +273,11 @@ class LocalDomain():
                 for i in range(self.nx):
                     self.tend[i, k, ll] = -(self.flux[i+1, k, ll] - self.flux[i, k, ll]) / self.dx
 
-#        print("_state sum: ", self.state.sum())
-#        print("_state_tmp sum: ", self.state_tmp.sum())
-#        print("_hy_dens_cell sum: ", self.hy_dens_cell.sum())
-#        print("_hy_dens_theta_cell sum: ", self.hy_dens_theta_cell.sum())
-#        print("hy_dens_int sum: ", self.hy_dens_int.sum())
-#        print("hy_dens_theta_int sum: ", self.hy_dens_theta_int.sum())
-#        print("hy_pressure_int sum: ", self.hy_pressure_int.sum())
-#        print("tend sum: ", self.tend.sum())
-#        print("flux sum: ", self.flux.sum())
-#
-#        sys.exit(0)
-
-
     def semi_discrete_step(self, state_init, state_forcing, state_out, dt, dir):
 
         if dir == self.DIR_X:
             self.set_halo_values_x(state_forcing)
             self.compute_tendencies_x(state_forcing)
-
         elif dir == self.DIR_Z:
             self.set_halo_values_z(state_forcing)
             self.compute_tendencies_z(state_forcing)
@@ -276,7 +285,8 @@ class LocalDomain():
         for ll in range(NUM_VARS):
             for k in range(self.nz):
                 for i in range(self.nx):
-                    state_out[i+self.hs, k+self.hs, ll] = state_init[i+self.hs, k+self.hs, ll] + dt * self.tend[i, k, ll]
+                    state_out[i+self.hs, k+self.hs, ll] = (state_init[i+self.hs, k+self.hs, ll] +
+                                                            dt * self.tend[i, k, ll])
 
     def timestep(self):
 
@@ -291,10 +301,10 @@ class LocalDomain():
             self.semi_discrete_step(self.state, self.state_tmp, self.state,
                                     self.dt / 1., self.DIR_X)
 
+
             # z direction second
             self.semi_discrete_step(self.state, self.state, self.state_tmp,
                                     self.dt / 3., self.DIR_Z)
-
             self.semi_discrete_step(self.state, self.state_tmp, self.state_tmp,
                                     self.dt / 2., self.DIR_Z)
             self.semi_discrete_step(self.state, self.state_tmp, self.state,
@@ -320,20 +330,20 @@ class LocalDomain():
     def reductions(self):
 
         mass = 0.
-        te   = 0.
+        te = 0.
 
-        for k in range(self.nz):
-            for i in range(self.nx):
-                r = self.state[i+self.hs, k+self.hs, self.ID_DENS] + self.hy_dens_cell[k+self.hs] # density
-                u = self.state[i+self.hs, k+self.hs, self.ID_UMOM] / r # u-wind
-                w = self.state[i+self.hs, k+self.hs, self.ID_WMOM] / r # v-wind
-                th = (self.state[i+self.hs, k+self.hs, self.ID_RHOT] + self.hy_dens_theta_cell[k+self.hs]) / r # potential temperature (theta)
-                p = self.c0 * (r * th)**self.gamma # pressure
-                t = th / (self.p0/p)**(self.rd/self.cp) # temperature
+        for k in range(self.hs, self.nz+self.hs):
+            for i in range(self.hs, self.nx+self.hs):
+                r = self.state[i, k, self.ID_DENS] + self.hy_dens_cell[k] # density
+                u = self.state[i, k, self.ID_UMOM] / r # u-wind
+                w = self.state[i, k, self.ID_WMOM] / r # v-wind
+                th = (self.state[i, k, self.ID_RHOT] + self.hy_dens_theta_cell[k]) / r # potential temperature (theta)
+                p = self.c0 * math.pow(r*th, self.gamma) # pressure
+                t = th / math.pow(self.p0/p, self.rd/self.cp) # temperature
                 ke = r * (u*u*w*w) # kinetic energy
                 ie = r * self.cv * t # internal energy
-                mass = mass + r * self.dx * self.dz # accumulate domain mass
-                te = te + (ke + r * self.cv * t) * self.dx * self.dz # accumulate domain energy
+                mass += r * self.dx * self.dz # accumulate domain mass
+                te +=(ke + r * self.cv * t) * self.dx * self.dz # accumulate domain energy
 
         return mass, te
 
@@ -341,16 +351,16 @@ class LocalDomain():
 
         t = self.theta0
         exner = self.exner0 - self.grav * z / (self.cp * self.theta0)
-        p = self.p0 * exner**(self.cp/self.rd)
-        rt = (p / self.c0)**(1./self.gamma)
+        p = self.p0 * math.pow(exner, self.cp/self.rd)
+        rt = math.pow(p/self.c0, 1./self.gamma)
         r = rt / t
 
         return r, t
 
     def sample_ellipse_cosine(self, x , z , amp , x0 , z0 , xrad , zrad):
-        dist = math.sqrt(((x-x0)/xrad)**2 + ((z-z0)/zrad)**2) * self.pi / 2.
+        dist = math.sqrt(math.pow((x-x0)/xrad, 2.) + math.pow((z-z0)/zrad, 2.)) * self.pi / 2.
         #If the distance from bubble center is less than the radius, create a cos**2 profile
-        return amp * (math.cos(dist)**2) if (dist <= self.pi / 2.) else 0.
+        return (amp * math.pow(math.cos(dist), 2.)) if (dist <= self.pi / 2.) else 0.
 
     def thermal(self, x, z):
 
@@ -360,43 +370,38 @@ class LocalDomain():
         t = 0.
         u = 0.
         w = 0.
+
         t = t + self.sample_ellipse_cosine(x, z, 3., self.xlen/2., 2000., 2000., 2000.)
 
         return r, u, w, t, hr, ht
 
     def output(self, etime):
 
-        if self.is_master():
-            print("*** OUTPUT ***")
+        for k in range(self.hs, self.nz+self.hs):
+            for i in range(self.hs, self.nx+self.hs):
+                self.dens[i-self.hs, k-self.hs] = self.state[i, k, self.ID_DENS]
+                self.uwnd[i-self.hs, k-self.hs] = (self.state[i, k, self.ID_UMOM] /
+                                (self.hy_dens_cell[k] + self.state[i,k,self.ID_DENS]))
+                self.wwnd[i-self.hs, k-self.hs] = (self.state[i, k, self.ID_WMOM] /
+                                (self.hy_dens_cell[k] + self.state[i,k,self.ID_DENS]))
+                self.theta[i-self.hs, k-self.hs] = ((self.state[i, k, self.ID_RHOT] +
+                                self.hy_dens_theta_cell[k]) / (self.hy_dens_cell[k] +
+                                self.state[i,k,self.ID_DENS]) - self.hy_dens_theta_cell[k] /
+                                self.hy_dens_cell[k])
 
-        #if etime == 0.:
-        #    # create file
-        #else:
-        #    # open file
+        # file name contains varname, ibeg, kbeg, count???``
+        self.vdens.write(self.dens, (self.i_beg, self.k_beg))
+        self.vuwnd.write(self.uwnd, (self.i_beg, self.k_beg))
+        self.vwwnd.write(self.wwnd, (self.i_beg, self.k_beg))
+        self.vtheta.write(self.theta, (self.i_beg, self.k_beg))
 
-        for k in range(self.nz):
-            for i in range(self.nx):
-                self.dens[i, k] = self.state[i+self.hs, k+self.hs, self.ID_DENS]
-                self.uwnd[i, k] = (self.state[i+self.hs, k+self.hs, self.ID_UMOM] /
-                                (self.hy_dens_cell[k+self.hs] +
-                                 self.state[i+self.hs,k+self.hs,self.ID_DENS]))
-                self.wwnd[i, k] = (self.state[i+self.hs, k+self.hs, self.ID_WMOM] /
-                                (self.hy_dens_cell[k+self.hs] +
-                                 self.state[i+self.hs,k+self.hs,self.ID_DENS]))
-                self.theta[i, k] = ((self.state[i+self.hs, k+self.hs, self.ID_RHOT] +
-                                self.hy_dens_theta_cell[k+self.hs]) /
-                                (self.hy_dens_cell[k+self.hs] +
-                                self.state[i+self.hs,k+self.hs,self.ID_DENS]) -
-                                self.hy_dens_theta_cell[k+self.hs] /
-                                self.hy_dens_cell[k+self.hs])
+#        if self.is_master():
+#            print("*** OUTPUT ***")
+#            print("sum dens = %f" % self.dens.sum())
+#            print("sum uwnd = %f" % self.uwnd.sum())
+#            print("sum wwnd = %f" % self.wwnd.sum())
+#            print("sum theta = %f" % self.theta.sum())
 
-        print("sum dens = %f" % self.dens.sum())
-        print("sum uwnd = %f" % self.uwnd.sum())
-        print("sum wwnd = %f" % self.wwnd.sum())
-        print("sum theta = %f" % self.theta.sum())
-
-    def is_master(self):
-        return True
 
 def main():
 
@@ -424,8 +429,7 @@ def main():
 
     output_counter = 0
 
-    if domain.is_master():
-        start_time = time.time()
+    start_time = time.time()
 
     while etime < argps.simtime:
 
@@ -434,24 +438,35 @@ def main():
 
         domain.timestep()
 
-        if domain.is_master():
-            print("Elapsed Time: %10.3f / %10.3f" % (etime, argps.simtime))
+        print("Elapsed Time: %10.3f / %10.3f" % (etime, argps.simtime))
 
         etime = etime + domain.dt 
 
         output_counter = output_counter + domain.dt 
         if output_counter >= argps.outfreq:
+#
+#            print("")
+#            print("%d state sum: %f" % (self.rank, self.state.sum()))
+#            print("%d state_tmp sum: %f" % (self.rank, self.state_tmp.sum()))
+#            print("%d hy_dens_cell sum: %f" % (self.rank, self.hy_dens_cell.sum()))
+#            print("%d hy_dens_theta_cell sum: %f" % (self.rank, self.hy_dens_theta_cell.sum()))
+#            print("%d hy_dens_int sum: %f" % (self.rank, self.hy_dens_int.sum()))
+#            print("%d hy_dens_theta_int sum: %f" % (self.rank, self.hy_dens_theta_int.sum()))
+#            print("%d hy_pressure_int sum: %f" % (self.rank, self.hy_pressure_int.sum()))
+#            print("%d tend sum: %f" % (self.rank, self.tend.sum()))
+#            print("%d flux sum: %f" % (self.rank, self.flux.sum()))
+#            sys.exit(0)
             output_counter = output_counter - argps.outfreq
             domain.output(etime)
 
-    if domain.is_master():
-        print("CPU Time: %f" % (time.time() - start_time))
+    print("CPU Time: %f" % (time.time() - start_time))
 
     mass, te = domain.reductions()
 
-    if domain.is_master():
-        print("d_mass: %f" % ((mass - mass0)/mass0))
-        print("d_te: %f" % ((te - te0)/te0))
+    print("d_mass: %f" % ((mass - mass0)/mass0))
+    print("d_te: %f" % ((te - te0)/te0))
+
+    domain.slabs.close()
 
 
 if __name__ == "__main__":

@@ -161,35 +161,32 @@ class LocalDomain():
             self.hy_dens_theta_int[k] = hr * ht
             self.hy_pressure_int[k] = self.c0 * math.pow(hr*ht, self.gamma)
 
-        # create file
-        if self.is_master():
+        try:
+            # create file
+            if self.is_master():
 
-            self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+                self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
 
-            # only master create dimension
-            xdim = self.slabs.define_dim("x", length=self.nx_glob, desc="X-dimension")
-            ydim = self.slabs.define_dim("z", self.nz_glob, desc="Z-dimension")
-            tdim = self.slabs.define_stream("time", desc="Time-dimension", default=True)
+                self.vdens = self.slabs.define_var("dens")
+                self.vuwnd = self.slabs.define_var("uwnd")
+                self.vwwnd = self.slabs.define_var("wwnd")
+                self.vtheta = self.slabs.define_var("theta")
 
-            # only master link to dimension
-            # order should be the last part of shape
-            # order can be multiple
-            self.vdens = self.slabs.define_var("dens", shape=(xdim, ydim), stream=tdim, desc="density")
-            self.vuwnd = self.slabs.define_var("uwnd", desc="u velocity")
-            self.vwwnd = self.slabs.define_var("wwnd", shape=(xdim, ydim), stream=tdim, desc="w velocity")
-            self.vtheta = self.slabs.define_var("theta", desc="temperature")
+                self.slabs.begin()
 
-            self.slabs.begin()
+            else:
+                # wait master
+                self.slabs = pyslabs.parallel_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
 
-        else:
-            # wait master
-            self.slabs = pyslabs.parallel_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+                # get to ndarray dimension
+                self.vdens = self.slabs.get_var("dens")
+                self.vuwnd = self.slabs.get_var("uwnd")
+                self.vwwnd = self.slabs.get_var("wwnd")
+                self.vtheta = self.slabs.get_var("theta")
 
-            # get to ndarray dimension
-            self.vdens = self.slabs.get_var("dens")
-            self.vuwnd = self.slabs.get_var("uwnd")
-            self.vwwnd = self.slabs.get_var("wwnd")
-            self.vtheta = self.slabs.get_var("theta")
+        except Exception as err:
+            print("ERROR: %s" % str(err))
+            self.comm.Abort(-1)
 
     def set_halo_values_z(self, state):
 
@@ -263,8 +260,8 @@ class LocalDomain():
         for ll in range(NUM_VARS):
             for k in range(self.nz):
                 for s in range(self.hs):
-                    self.sendbuf_l[s, k, ll] = self.state[s+self.hs, k+self.hs, ll]
-                    self.sendbuf_r[s, k, ll] = self.state[s-2*self.hs, k+self.hs, ll]
+                    self.sendbuf_l[s, k, ll] = state[s+self.hs, k+self.hs, ll]
+                    self.sendbuf_r[s, k, ll] = state[s-2*self.hs, k+self.hs, ll]
 
         sends = []
         sends.append(self.comm.Isend(self.sendbuf_l, self.left_rank, 1))
@@ -275,8 +272,8 @@ class LocalDomain():
         for ll in range(NUM_VARS):
             for k in range(self.nz):
                 for s in range(self.hs):
-                    self.state[s, k+self.hs, ll] = self.recvbuf_l[s, k, ll]
-                    self.state[self.nx+self.hs+s, k+self.hs, ll] = self.recvbuf_r[s, k, ll]
+                    state[s, k+self.hs, ll] = self.recvbuf_l[s, k, ll]
+                    state[self.nx+self.hs+s, k+self.hs, ll] = self.recvbuf_r[s, k, ll]
 
         MPI.Request.Waitall(sends)
 
@@ -437,8 +434,8 @@ class LocalDomain():
                                 self.hy_dens_cell[k])
 
         # file name contains varname, ibeg, kbeg, count???``
-        self.vdens.write(self.dens, (self.i_beg, self.k_beg), stream_time=etime)
-        self.vuwnd.write(self.uwnd, (self.i_beg, self.k_beg), stream=etime)
+        self.vdens.write(self.dens, (self.i_beg, self.k_beg))
+        self.vuwnd.write(self.uwnd, (self.i_beg, self.k_beg))
         self.vwwnd.write(self.wwnd, (self.i_beg, self.k_beg))
         self.vtheta.write(self.theta, (self.i_beg, self.k_beg))
 
