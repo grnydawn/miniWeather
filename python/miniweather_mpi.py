@@ -1,6 +1,6 @@
 import os, sys, argparse, time, math, numpy
 from mpi4py import MPI
-import simpdf
+import pyslabs
 
 NX = 100 # 2000 # 100            # number of local grid cells in the x-dimension
 NZ = 50 # 1000 # 50             # number of local grid cells in the z-dimension
@@ -164,30 +164,32 @@ class LocalDomain():
         # create file
         if self.is_master():
 
-            self.spdf = simpdf.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+            self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
 
             # only master create dimension
-            xdim = self.spdf.define_dim("x", self.nx_glob, "X-dimension")
-            ydim = self.spdf.define_dim("z", self.nz_glob, "Z-dimension")
-            tdim = self.spdf.define_order("time", simpdf.UNLIMITED, "Time-dimension")
+            xdim = self.slabs.define_dim("x", length=self.nx_glob, desc="X-dimension")
+            ydim = self.slabs.define_dim("z", self.nz_glob, desc="Z-dimension")
+            tdim = self.slabs.define_stream("time", desc="Time-dimension", default=True)
 
             # only master link to dimension
-            self.vdens = self.spdf.define_var("dens", (xdim, ydim), tdim, "density")
-            self.vuwnd = self.spdf.define_var("uwnd", (xdim, ydim), tdim, "u velocity")
-            self.vwwnd = self.spdf.define_var("wwnd", (xdim, ydim), tdim, "w velocity")
-            self.vtheta = self.spdf.define_var("theta", (xdim, ydim), tdim, "temperature")
+            # order should be the last part of shape
+            # order can be multiple
+            self.vdens = self.slabs.define_var("dens", shape=(xdim, ydim), stream=tdim, desc="density")
+            self.vuwnd = self.slabs.define_var("uwnd", desc="u velocity")
+            self.vwwnd = self.slabs.define_var("wwnd", shape=(xdim, ydim), stream=tdim, desc="w velocity")
+            self.vtheta = self.slabs.define_var("theta", desc="temperature")
 
-            self.spdf.begin()
+            self.slabs.begin()
 
         else:
             # wait master
-            self.spdf = simpdf.open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+            self.slabs = pyslabs.parallel_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
 
             # get to ndarray dimension
-            self.vdens = self.spdf.get_vardef("dens")
-            self.vuwnd = self.spdf.get_vardef("uwnd")
-            self.vwwnd = self.spdf.get_vardef("wwnd")
-            self.vtheta = self.spdf.get_vardef("theta")
+            self.vdens = self.slabs.get_var("dens")
+            self.vuwnd = self.slabs.get_var("uwnd")
+            self.vwwnd = self.slabs.get_var("wwnd")
+            self.vtheta = self.slabs.get_var("theta")
 
     def set_halo_values_z(self, state):
 
@@ -435,10 +437,10 @@ class LocalDomain():
                                 self.hy_dens_cell[k])
 
         # file name contains varname, ibeg, kbeg, count???``
-        self.vdens.write(self.dens, (self.i_beg, self.k_beg), etime)
-        self.vuwnd.write(self.uwnd, (self.i_beg, self.k_beg), etime)
-        self.vwwnd.write(self.wwnd, (self.i_beg, self.k_beg), etime)
-        self.vtheta.write(self.theta, (self.i_beg, self.k_beg), etime)
+        self.vdens.write(self.dens, (self.i_beg, self.k_beg), stream_time=etime)
+        self.vuwnd.write(self.uwnd, (self.i_beg, self.k_beg), stream=etime)
+        self.vwwnd.write(self.wwnd, (self.i_beg, self.k_beg))
+        self.vtheta.write(self.theta, (self.i_beg, self.k_beg))
 
 #        if self.is_master():
 #            print("*** OUTPUT ***")
@@ -517,7 +519,7 @@ def main():
         print("d_mass: %f" % ((mass - mass0)/mass0))
         print("d_te: %f" % ((te - te0)/te0))
 
-    domain.spdf.close()
+    domain.slabs.close()
 
 
 if __name__ == "__main__":
