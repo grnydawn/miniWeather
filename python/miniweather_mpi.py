@@ -192,16 +192,24 @@ class LocalDomain():
 
         for ll in range(NUM_VARS):
             for i in range(self.nx+self.hs*2):
-                if ll == self.ID_WMOM:
-                    state[i, 0, ll] = 0.
-                    state[i, 1, ll] = 0.
-                    state[i, self.nz+self.hs, ll] = 0.
-                    state[i, self.nz+self.hs+1, ll] = 0.
-                else:
-                    state[i, 0, ll] = state[i, self.hs, ll]
-                    state[i, 1, ll] = state[i, self.hs, ll]
-                    state[i, self.nz+self.hs, ll] = state[i, self.nz+self.hs-1, ll]
-                    state[i, self.nz+self.hs+1, ll] = state[i, self.nz+self.hs-1, ll]
+                for h in range(self.hs):
+                    if ll == self.ID_WMOM:
+                        state[i, h, ll] = 0.
+                        state[i, -h, ll] = 0.
+                    else:
+                        state[i, h, ll] = state[i, self.hs, ll]
+                        state[i, -h, ll] = state[i, -self.hs, ll]
+#
+#                if ll == self.ID_WMOM:
+#                    state[i, 0, ll] = 0.
+#                    state[i, 1, ll] = 0.
+#                    state[i, self.nz+self.hs, ll] = 0.
+#                    state[i, self.nz+self.hs+1, ll] = 0.
+#                else:
+#                    state[i, 0, ll] = state[i, self.hs, ll]
+#                    state[i, 1, ll] = state[i, self.hs, ll]
+#                    state[i, self.nz+self.hs, ll] = state[i, self.nz+self.hs-1, ll]
+#                    state[i, self.nz+self.hs+1, ll] = state[i, self.nz+self.hs-1, ll]
 
     def compute_tendencies_z(self, state):
         # Compute the hyperviscosity coeficient
