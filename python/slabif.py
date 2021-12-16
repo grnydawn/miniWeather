@@ -5,6 +5,7 @@ _supported_arrays = {
                         type(a).__module__== "numpy"), "npy")
 }
 
+
 def arraytype(slab):
     for atype, (check, ext) in _supported_arrays.items():
         if check(slab):
@@ -15,11 +16,23 @@ def arraytype(slab):
 
 def dump(slab, file):
 
-    if arraytype(slab)[0] == "numpy":
+    atype, ext = arraytype(slab)
+
+    if atype == "numpy":
         import numpy as np
         np.save(file, slab, allow_pickle=False)
 
-    raise Exception("Not implemented.")
+    raise Exception("Not implemented: %s" % atype)
+
+
+def stack(arrays, atype):
+
+    if atype == "numpy":
+        import numpy as np
+        return np.stack(arrays)
+
+    raise Exception("Not implemented: %s" % atype)
+
 
 def load(path, atype):
 
@@ -28,9 +41,10 @@ def load(path, atype):
         slab = np.load(path, allow_pickle=False)
         return ("numpy", slab)
 
-    raise Exception("Not implemented.")
+    raise Exception("Not implemented: %s" % atype)
 
-def _concat(bucket, array):
+
+def concat(bucket, array):
 
     if bucket[0] is None:
         atype = array[0]
@@ -60,9 +74,12 @@ def _concat(bucket, array):
 
 
 def _merge(path):
-    _b = []
 
-    for item in os.listdir(path):
+    _b = []
+    _stack = []
+    _atype = None
+
+    for item in sorted(os.listdir(path)):
         _p = os.path.join(path, item)
 
         if os.path.isdir(_p):
@@ -70,29 +87,34 @@ def _merge(path):
 
         elif os.path.isfile(_p):
             _, atype, _ = item.split(".")
-            return load(_p, atype)
+
+            if _atype is None:
+                _atype = atype
+                _stack.append(load(_p, atype)[1])
+
+            elif _atype != atype:
+                raise Exception("Different type exists in a stream: %s != %s" % (_atype, atype))
+
+            else:
+                _stack.append(load(_p, atype)[1])
             
         else:
             raise Exception("Unknown file type: %s" % _p)
 
-    _m = [None, None]
+    if _stack:
+        _m = [_atype, stack(_stack, _atype)]
+
+    else:
+        _m = [None, None]
+
     for _i in _b:
-        _concat(_m, _i)
+        concat(_m, _i)
         
     return _m
+
 
 def get_array(var):
 
     stype, arr = _merge(var.path)
 
     return arr
-
- 
-    return merge_dim(path)
-#
-#    for item in os.listdir(var.path):
-#    for (stype, start, path), slab in var.get_slabs():
-#        with open(path, "rb") as fp:
-#            arr = load(stype, fp)
-
-    raise Exception("Not implemented.")

@@ -14,7 +14,14 @@ def main():
         dens_array = data.get_array("dens")
         #dens_view.write(dens_modified_array)
 
-        cs = plt.contourf(dens_array)
+        #import pdb; pdb.set_trace()
+        cs = plt.contourf(dens_array[0, :, :])
+        plt.savefig("test0.png")
+        cs = plt.contourf(dens_array[1, :, :])
+        plt.savefig("test1.png")
+        cs = plt.contourf(dens_array[2, :, :])
+        plt.savefig("test2.png")
+
 #        x = np.arange(1, 10)
 #        y = x.reshape(-1, 1)
 #        h = x * y
@@ -25,7 +32,6 @@ def main():
 #        cs.cmap.set_under('blue')
 #        cs.changed()
         #plt.show()
-        plt.savefig("test.png")
 
 
 if __name__ == "__main__":
