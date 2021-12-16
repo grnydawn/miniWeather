@@ -40,7 +40,11 @@ class VariableWriter():
             path = os.path.join(str(start))
             os.makedirs(path)
 
-        with open(os.path.join(path, str(self.writecount)), "wb") as fp:
+        wc = str(self.writecount)
+        atype, ext = slabif.arraytype(slab)
+        slabpath = os.path.join(path, ".".join([wc, atype, ext])) 
+
+        with open(slabpath, "wb") as fp:
             try:
                 slabif.dump(slab, fp)
 
@@ -60,6 +64,9 @@ class VariableReader():
         self.path = path
         self.config = config
 
+    def get_array(self):
+        import pdb; pdb.set_trace()
+        
 
 class MasterPyslabsWriter():
 
