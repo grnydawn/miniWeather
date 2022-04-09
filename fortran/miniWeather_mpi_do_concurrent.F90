@@ -89,14 +89,17 @@ program miniweather
   real(rp), allocatable :: state_tmp(:,:,:)     !Fluid state.                            Dimensions: (1-hs:nx+hs,1-hs:nz+hs,NUM_VARS)
   real(rp), allocatable :: flux     (:,:,:)     !Cell interface fluxes.                  Dimensions: (nx+1,nz+1,NUM_VARS)
   real(rp), allocatable :: tend     (:,:,:)     !Fluid state tendencies.                 Dimensions: (nx,nz,NUM_VARS)
+  real(rp), allocatable :: sendbuf_l(:,:,:)     !buffers for MPI data exchanges. Dimensions: (hs,nz,NUM_VARS)
+  real(rp), allocatable :: sendbuf_r(:,:,:)     !buffers for MPI data exchanges. Dimensions: (hs,nz,NUM_VARS)
+  real(rp), allocatable :: recvbuf_l(:,:,:)     !buffers for MPI data exchanges. Dimensions: (hs,nz,NUM_VARS)
+  real(rp), allocatable :: recvbuf_r(:,:,:)     !buffers for MPI data exchanges. Dimensions: (hs,nz,NUM_VARS)
   integer(8) :: t1, t2, rate                    !For CPU Timings
   real(rp) :: mass0, te0                        !Initial domain totals for mass and total energy  
-  real(rp) :: mass ,te                          !Domain totals for mass and total energy  
+  real(rp) :: mass , te                         !Domain totals for mass and total energy  
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   !! THE MAIN PROGRAM STARTS HERE
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
 
   !Initialize MPI, allocate arrays, initialize the grid and the data
   call init(dt)
@@ -188,7 +191,6 @@ contains
       call semi_discrete_step( state , state_tmp , state_tmp , dt / 2 , DIR_X , flux , tend )
       call semi_discrete_step( state , state_tmp , state     , dt / 1 , DIR_X , flux , tend )
     endif
-    direction_switch = .not. direction_switch
   end subroutine perform_timestep
 
 
@@ -219,37 +221,30 @@ contains
       call compute_tendencies_z(state_forcing,flux,tend,dt)
     endif
 
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !Apply the tendencies to the fluid state
-    do ll = 1 , NUM_VARS
-      do k = 1 , nz
-        do i = 1 , nx
-          if (data_spec_int == DATA_SPEC_GRAVITY_WAVES) then
-            x = (i_beg-1 + i-0.5_rp) * dx
-            z = (k_beg-1 + k-0.5_rp) * dz
-            ! The following requires "acc routine" in OpenACC and "declare target" in OpenMP offload
-            ! Neither of these are particularly well supported by compilers, so I'm manually inlining
-            ! wpert = sample_ellipse_cosine( x,z , 0.01_rp , xlen/8,1000._rp, 500._rp,500._rp )
-            x0 = xlen/8
-            z0 = 1000
-            xrad = 500
-            zrad = 500
-            amp = 0.01_rp
-            !Compute distance from bubble center
-            dist = sqrt( ((x-x0)/xrad)**2 + ((z-z0)/zrad)**2 ) * pi / 2._rp
-            !If the distance from bubble center is less than the radius, create a cos**2 profile
-            if (dist <= pi / 2._rp) then
-              wpert = amp * cos(dist)**2
-            else
-              wpert = 0._rp
-            endif
-            tend(i,k,ID_WMOM) = tend(i,k,ID_WMOM) + wpert*hy_dens_cell(k)
-          endif
-          state_out(i,k,ll) = state_init(i,k,ll) + dt * tend(i,k,ll)
-        enddo
-      enddo
+    do concurrent (ll=1:NUM_VARS, k=1:nz, i=1:nx) local(x,z,x0,z0,xrad,zrad,amp,dist,wpert)
+      if (data_spec_int == DATA_SPEC_GRAVITY_WAVES) then
+        x = (i_beg-1 + i-0.5_rp) * dx
+        z = (k_beg-1 + k-0.5_rp) * dz
+        ! The following requires "acc routine" in OpenACC and "declare target" in OpenMP offload
+        ! Neither of these are particularly well supported by compilers, so I'm manually inlining
+        ! wpert = sample_ellipse_cosine( x,z , 0.01_rp , xlen/8,1000._rp, 500._rp,500._rp )
+        x0 = xlen/8
+        z0 = 1000
+        xrad = 500
+        zrad = 500
+        amp = 0.01_rp
+        !Compute distance from bubble center
+        dist = sqrt( ((x-x0)/xrad)**2 + ((z-z0)/zrad)**2 ) * pi / 2._rp
+        !If the distance from bubble center is less than the radius, create a cos**2 profile
+        if (dist <= pi / 2._rp) then
+          wpert = amp * cos(dist)**2
+        else
+          wpert = 0._rp
+        endif
+        tend(i,k,ID_WMOM) = tend(i,k,ID_WMOM) + wpert*hy_dens_cell(k)
+      endif
+      state_out(i,k,ll) = state_init(i,k,ll) + dt * tend(i,k,ll)
     enddo
   end subroutine semi_discrete_step
 
@@ -268,48 +263,36 @@ contains
     real(rp) :: r,u,w,t,p, stencil(4), d3_vals(NUM_VARS), vals(NUM_VARS), hv_coef
     !Compute the hyperviscosity coeficient
     hv_coef = -hv_beta * dx / (16*dt)
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !Compute fluxes in the x-direction for each cell
-    do k = 1 , nz
-      do i = 1 , nx+1
-        !Use fourth-order interpolation from four cell averages to compute the value at the interface in question
-        do ll = 1 , NUM_VARS
-          do s = 1 , sten_size
-            stencil(s) = state(i-hs-1+s,k,ll)
-          enddo
-          !Fourth-order-accurate interpolation of the state
-          vals(ll) = -stencil(1)/12 + 7*stencil(2)/12 + 7*stencil(3)/12 - stencil(4)/12
-          !First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
-          d3_vals(ll) = -stencil(1) + 3*stencil(2) - 3*stencil(3) + stencil(4)
+    do concurrent (k=1:nz, i=1:nx+1) local(d3_vals,vals,stencil,ll,s,r,u,t,p,w)
+      !Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+      do ll = 1 , NUM_VARS
+        do s = 1 , sten_size
+          stencil(s) = state(i-hs-1+s,k,ll)
         enddo
-
-        !Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
-        r = vals(ID_DENS) + hy_dens_cell(k)
-        u = vals(ID_UMOM) / r
-        w = vals(ID_WMOM) / r
-        t = ( vals(ID_RHOT) + hy_dens_theta_cell(k) ) / r
-        p = C0*(r*t)**gamma
-
-        !Compute the flux vector
-        flux(i,k,ID_DENS) = r*u     - hv_coef*d3_vals(ID_DENS)
-        flux(i,k,ID_UMOM) = r*u*u+p - hv_coef*d3_vals(ID_UMOM)
-        flux(i,k,ID_WMOM) = r*u*w   - hv_coef*d3_vals(ID_WMOM)
-        flux(i,k,ID_RHOT) = r*u*t   - hv_coef*d3_vals(ID_RHOT)
+        !Fourth-order-accurate interpolation of the state
+        vals(ll) = -stencil(1)/12 + 7*stencil(2)/12 + 7*stencil(3)/12 - stencil(4)/12
+        !First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
+        d3_vals(ll) = -stencil(1) + 3*stencil(2) - 3*stencil(3) + stencil(4)
       enddo
+
+      !Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
+      r = vals(ID_DENS) + hy_dens_cell(k)
+      u = vals(ID_UMOM) / r
+      w = vals(ID_WMOM) / r
+      t = ( vals(ID_RHOT) + hy_dens_theta_cell(k) ) / r
+      p = C0*(r*t)**gamma
+
+      !Compute the flux vector
+      flux(i,k,ID_DENS) = r*u     - hv_coef*d3_vals(ID_DENS)
+      flux(i,k,ID_UMOM) = r*u*u+p - hv_coef*d3_vals(ID_UMOM)
+      flux(i,k,ID_WMOM) = r*u*w   - hv_coef*d3_vals(ID_WMOM)
+      flux(i,k,ID_RHOT) = r*u*t   - hv_coef*d3_vals(ID_RHOT)
     enddo
 
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !Use the fluxes to compute tendencies for each cell
-    do ll = 1 , NUM_VARS
-      do k = 1 , nz
-        do i = 1 , nx
-          tend(i,k,ll) = -( flux(i+1,k,ll) - flux(i,k,ll) ) / dx
-        enddo
-      enddo
+    do concurrent (ll = 1:NUM_VARS, k = 1:nz, i = 1:nx)
+      tend(i,k,ll) = -( flux(i+1,k,ll) - flux(i,k,ll) ) / dx
     enddo
   end subroutine compute_tendencies_x
 
@@ -328,12 +311,8 @@ contains
     real(rp) :: r,u,w,t,p, stencil(4), d3_vals(NUM_VARS), vals(NUM_VARS), hv_coef
     !Compute the hyperviscosity coeficient
     hv_coef = -hv_beta * dz / (16*dt)
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !Compute fluxes in the x-direction for each cell
-    do k = 1 , nz+1
-      do i = 1 , nx
+    do concurrent (k=1:nz+1, i=1:nx) local(d3_vals,vals,stencil,ll,s,r,u,t,p,w)
         !Use fourth-order interpolation from four cell averages to compute the value at the interface in question
         do ll = 1 , NUM_VARS
           do s = 1 , sten_size
@@ -362,22 +341,14 @@ contains
         flux(i,k,ID_UMOM) = r*w*u   - hv_coef*d3_vals(ID_UMOM)
         flux(i,k,ID_WMOM) = r*w*w+p - hv_coef*d3_vals(ID_WMOM)
         flux(i,k,ID_RHOT) = r*w*t   - hv_coef*d3_vals(ID_RHOT)
-      enddo
     enddo
 
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !Use the fluxes to compute tendencies for each cell
-    do ll = 1 , NUM_VARS
-      do k = 1 , nz
-        do i = 1 , nx
-          tend(i,k,ll) = -( flux(i,k+1,ll) - flux(i,k,ll) ) / dz
-          if (ll == ID_WMOM) then
-            tend(i,k,ID_WMOM) = tend(i,k,ID_WMOM) - state(i,k,ID_DENS)*grav
-          endif
-        enddo
-      enddo
+    do concurrent (ll=1:NUM_VARS, k=1:nz, i=1:nx)
+      tend(i,k,ll) = -( flux(i,k+1,ll) - flux(i,k,ll) ) / dz
+      if (ll == ID_WMOM) then
+        tend(i,k,ID_WMOM) = tend(i,k,ID_WMOM) - state(i,k,ID_DENS)*grav
+      endif
     enddo
   end subroutine compute_tendencies_z
 
@@ -386,35 +357,38 @@ contains
   subroutine set_halo_values_x(state)
     implicit none
     real(rp), intent(inout) :: state(1-hs:nx+hs,1-hs:nz+hs,NUM_VARS)
-    integer :: k, ll
+    integer :: k, ll, s, ierr, req_r(2), req_s(2), status(MPI_STATUS_SIZE,2)
     real(rp) :: z
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: EXCHANGE HALO VALUES WITH NEIGHBORING MPI TASKS
-    !! (1) give    state(1:hs,1:nz,1:NUM_VARS)       to   my left  neighbor
-    !! (2) receive state(1-hs:0,1:nz,1:NUM_VARS)     from my left  neighbor
-    !! (3) give    state(nx-hs+1:nx,1:nz,1:NUM_VARS) to   my right neighbor
-    !! (4) receive state(nx+1:nx+hs,1:nz,1:NUM_VARS) from my right neighbor
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! DELETE THE SERIAL CODE BELOW AND REPLACE WITH MPI
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    do ll = 1 , NUM_VARS
-      do k = 1 , nz
-        state(-1  ,k,ll) = state(nx-1,k,ll)
-        state(0   ,k,ll) = state(nx  ,k,ll)
-        state(nx+1,k,ll) = state(1   ,k,ll)
-        state(nx+2,k,ll) = state(2   ,k,ll)
-      enddo
+    !Prepost receives
+    call mpi_irecv(recvbuf_l,hs*nz*NUM_VARS,MPI_REAL8, left_rank,0,MPI_COMM_WORLD,req_r(1),ierr)
+    call mpi_irecv(recvbuf_r,hs*nz*NUM_VARS,MPI_REAL8,right_rank,1,MPI_COMM_WORLD,req_r(2),ierr)
+
+    !Pack the send buffers
+    do concurrent (ll=1:NUM_VARS, k=1:nz, s=1:hs)
+      sendbuf_l(s,k,ll) = state(s      ,k,ll)
+      sendbuf_r(s,k,ll) = state(nx-hs+s,k,ll)
     enddo
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    !Fire off the sends
+    call mpi_isend(sendbuf_l,hs*nz*NUM_VARS,MPI_REAL8, left_rank,1,MPI_COMM_WORLD,req_s(1),ierr)
+    call mpi_isend(sendbuf_r,hs*nz*NUM_VARS,MPI_REAL8,right_rank,0,MPI_COMM_WORLD,req_s(2),ierr)
+
+    !Wait for receives to finish
+    call mpi_waitall(2,req_r,status,ierr)
+
+    !Unpack the receive buffers
+    do concurrent (ll=1:NUM_VARS, k=1:nz, s=1:hs)
+      state(-hs+s,k,ll) = recvbuf_l(s,k,ll)
+      state(nx+s ,k,ll) = recvbuf_r(s,k,ll)
+    enddo
+
+    !Wait for sends to finish
+    call mpi_waitall(2,req_s,status,ierr)
 
     if (data_spec_int == DATA_SPEC_INJECTION) then
       if (myrank == 0) then
-        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        !! TODO: THREAD ME
-        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        do k = 1 , nz
+        do concurrent (k=1:nz) local(z)
           z = (k_beg-1 + k-0.5_rp)*dz
           if (abs(z-3*zlen/4) <= zlen/16) then
             state(-1:0,k,ID_UMOM) = (state(-1:0,k,ID_DENS)+hy_dens_cell(k)) * 50._rp
@@ -432,30 +406,23 @@ contains
     implicit none
     real(rp), intent(inout) :: state(1-hs:nx+hs,1-hs:nz+hs,NUM_VARS)
     integer :: i, ll
-    real(rp), parameter :: mnt_width = xlen/8
-    real(rp) :: x, xloc, mnt_deriv
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! TODO: THREAD ME
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    do ll = 1 , NUM_VARS
-      do i = 1-hs,nx+hs
-        if (ll == ID_WMOM) then
-          state(i,-1  ,ll) = 0
-          state(i,0   ,ll) = 0
-          state(i,nz+1,ll) = 0
-          state(i,nz+2,ll) = 0
-        else if (ll == ID_UMOM) then
-          state(i,-1  ,ll) = state(i,1 ,ll) / hy_dens_cell( 1) * hy_dens_cell(-1  )
-          state(i,0   ,ll) = state(i,1 ,ll) / hy_dens_cell( 1) * hy_dens_cell( 0  )
-          state(i,nz+1,ll) = state(i,nz,ll) / hy_dens_cell(nz) * hy_dens_cell(nz+1)
-          state(i,nz+2,ll) = state(i,nz,ll) / hy_dens_cell(nz) * hy_dens_cell(nz+2)
-        else
-          state(i,-1  ,ll) = state(i,1 ,ll)
-          state(i,0   ,ll) = state(i,1 ,ll)
-          state(i,nz+1,ll) = state(i,nz,ll)
-          state(i,nz+2,ll) = state(i,nz,ll)
-        endif
-      enddo
+    do concurrent (ll=1:NUM_VARS, i=1-hs:nx+hs)
+      if (ll == ID_WMOM) then
+        state(i,-1  ,ll) = 0
+        state(i,0   ,ll) = 0
+        state(i,nz+1,ll) = 0
+        state(i,nz+2,ll) = 0
+      else if (ll == ID_UMOM) then
+        state(i,-1  ,ll) = state(i,1 ,ll) / hy_dens_cell( 1) * hy_dens_cell(-1  )
+        state(i,0   ,ll) = state(i,1 ,ll) / hy_dens_cell( 1) * hy_dens_cell( 0  )
+        state(i,nz+1,ll) = state(i,nz,ll) / hy_dens_cell(nz) * hy_dens_cell(nz+1)
+        state(i,nz+2,ll) = state(i,nz,ll) / hy_dens_cell(nz) * hy_dens_cell(nz+2)
+      else
+        state(i,-1  ,ll) = state(i,1 ,ll)
+        state(i,0   ,ll) = state(i,1 ,ll)
+        state(i,nz+1,ll) = state(i,nz,ll)
+        state(i,nz+2,ll) = state(i,nz,ll)
+      endif
     enddo
   end subroutine set_halo_values_z
 
@@ -464,8 +431,8 @@ contains
   subroutine init(dt)
     implicit none
     real(rp), intent(  out) :: dt
-    integer :: i, k, ii, kk, ll, ierr
-    real(rp) :: x, z, r, u, w, t, hr, ht
+    integer :: i, k, ii, kk, ll, ierr, i_end
+    real(rp) :: x, z, r, u, w, t, hr, ht, nper
 
     !Set the cell grid size
     dx = xlen / nx_glob
@@ -479,23 +446,20 @@ contains
     !!       (4) COMPUTE HOW MANY X-DIRECTION CELLS MY RANK HAS
     !!       (5) FIND MY LEFT AND RIGHT NEIGHBORING RANK IDs
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    call MPI_Init(ierr)
-    nranks = 1
-    myrank = 0
-    i_beg = 1
-    nx = nx_glob
-    left_rank = 0
-    right_rank = 0
+    call mpi_init(ierr)
+    call mpi_comm_size(mpi_comm_world,nranks,ierr)
+    call mpi_comm_rank(mpi_comm_world,myrank,ierr)
+    nper = real(nx_glob)/nranks
+    i_beg = nint( nper* (myrank)    )+1
+    i_end = nint( nper*((myrank)+1) )
+    nx = i_end - i_beg + 1
+    left_rank  = myrank - 1
+    if (left_rank == -1) left_rank = nranks-1
+    right_rank = myrank + 1
+    if (right_rank == nranks) right_rank = 0
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !! END MPI DUMMY SECTION
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! YOU DON'T NEED TO ALTER ANYTHING BELOW THIS POINT IN THE CODE
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     !Vertical direction isn't MPI-ized, so the rank's local values = the global values
     k_beg = 1
@@ -512,6 +476,10 @@ contains
     allocate(hy_dens_int       (nz+1))
     allocate(hy_dens_theta_int (nz+1))
     allocate(hy_pressure_int   (nz+1))
+    allocate(sendbuf_l(hs,nz,NUM_VARS))
+    allocate(sendbuf_r(hs,nz,NUM_VARS))
+    allocate(recvbuf_l(hs,nz,NUM_VARS))
+    allocate(recvbuf_r(hs,nz,NUM_VARS))
 
     !Define the maximum stable time step based on an assumed maximum wind speed
     dt = min(dx,dz) / max_speed * cfl
@@ -592,7 +560,6 @@ contains
   end subroutine init
 
 
-  !This test case is initially balanced but injects fast, cold air from the left boundary near the model top
   subroutine injection(x,z,r,u,w,t,hr,ht)
     implicit none
     real(rp), intent(in   ) :: x, z        !x- and z- location of the point being sampled
@@ -729,6 +696,10 @@ contains
     deallocate(hy_dens_int       )
     deallocate(hy_dens_theta_int )
     deallocate(hy_pressure_int   )
+    deallocate(sendbuf_l)
+    deallocate(sendbuf_r)
+    deallocate(recvbuf_l)
+    deallocate(recvbuf_r)
     call MPI_Finalize(ierr)
   end subroutine finalize
 
@@ -749,6 +720,7 @@ contains
     !Temporary arrays to hold density, u-wind, w-wind, and potential temperature (theta)
     real(rp), allocatable :: dens(:,:), uwnd(:,:), wwnd(:,:), theta(:,:)
     real(rp) :: etimearr(1)
+
     !Inform the user
     if (masterproc) write(*,*) '*** OUTPUT ***'
     !Allocate some (big) temp arrays
@@ -847,6 +819,8 @@ contains
     real(rp) :: glob(2)
     mass = 0
     te   = 0
+    ! The line below is a placeholder for when reductions enter the Fortran standard
+    ! do concurrent (k=1:nz,i=1:nx) reduce(+:mass,te) local(r,u,w,th,p,t,ke,ie)
     do k = 1 , nz
       do i = 1 , nx
         r  =   state(i,k,ID_DENS) + hy_dens_cell(k)             ! Density

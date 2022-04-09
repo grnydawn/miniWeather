@@ -7,9 +7,11 @@ export TEST_MPI_COMMAND="mpirun -n 1"
 unset CUDAFLAGS
 unset CXXFLAGS
 
-export OMPI_CXX=g++
-export OMPI_CC=gcc
-export OMPI_F90=gfortran
+export OMPI_CXX=/opt/intel/oneapi/compiler/2022.0.2/linux/bin/icpx
+export OMPI_CC=/opt/intel/oneapi/compiler/2022.0.2/linux/bin-llvm/clang
+export OMPI_FC=/opt/intel/oneapi/compiler/2022.0.2/linux/bin/intel64/ifort
+
+export LD_LIBRARY_PATH=/opt/intel/oneapi/compiler/2022.0.2/linux/compiler/lib/intel64_lin:$LD_LIBRARY_PATH
 
 ./cmake_clean.sh
 

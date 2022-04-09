@@ -10,25 +10,33 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <mpi.h>
-#include <ctime>
 #include "const.h"
 #include "pnetcdf.h"
+#include <ctime>
 #include <chrono>
 
 // We're going to define all arrays on the host because this doesn't use parallel_for
-typedef yakl::Array<real  ,1,yakl::memHost> real1d;
-typedef yakl::Array<real  ,2,yakl::memHost> real2d;
-typedef yakl::Array<real  ,3,yakl::memHost> real3d;
-typedef yakl::Array<double,1,yakl::memHost> doub1d;
-typedef yakl::Array<double,2,yakl::memHost> doub2d;
-typedef yakl::Array<double,3,yakl::memHost> doub3d;
+typedef yakl::Array<real  ,1,yakl::memDevice> real1d;
+typedef yakl::Array<real  ,2,yakl::memDevice> real2d;
+typedef yakl::Array<real  ,3,yakl::memDevice> real3d;
+typedef yakl::Array<double,1,yakl::memDevice> doub1d;
+typedef yakl::Array<double,2,yakl::memDevice> doub2d;
+typedef yakl::Array<double,3,yakl::memDevice> doub3d;
 
-typedef yakl::Array<real   const,1,yakl::memHost> realConst1d;
-typedef yakl::Array<real   const,2,yakl::memHost> realConst2d;
-typedef yakl::Array<real   const,3,yakl::memHost> realConst3d;
-typedef yakl::Array<double const,1,yakl::memHost> doubConst1d;
-typedef yakl::Array<double const,2,yakl::memHost> doubConst2d;
-typedef yakl::Array<double const,3,yakl::memHost> doubConst3d;
+typedef yakl::Array<real   const,1,yakl::memDevice> realConst1d;
+typedef yakl::Array<real   const,2,yakl::memDevice> realConst2d;
+typedef yakl::Array<real   const,3,yakl::memDevice> realConst3d;
+typedef yakl::Array<double const,1,yakl::memDevice> doubConst1d;
+typedef yakl::Array<double const,2,yakl::memDevice> doubConst2d;
+typedef yakl::Array<double const,3,yakl::memDevice> doubConst3d;
+
+// Some arrays still need to be on the host, so we will explicitly create Host Array typedefs
+typedef yakl::Array<real  ,1,yakl::memHost> real1dHost;
+typedef yakl::Array<real  ,2,yakl::memHost> real2dHost;
+typedef yakl::Array<real  ,3,yakl::memHost> real3dHost;
+typedef yakl::Array<double,1,yakl::memHost> doub1dHost;
+typedef yakl::Array<double,2,yakl::memHost> doub2dHost;
+typedef yakl::Array<double,3,yakl::memHost> doub3dHost;
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // Variables that are initialized but remain static over the coure of the simulation
@@ -46,21 +54,26 @@ struct Fixed_data {
   realConst1d hy_pressure_int;     //hydrostatic press (vert cell interf).   Dimensions: (1:nz+1)
 };
 
+///////////////////////////////////////////////////////////////////////////////////////
+// Variables that are dynamics over the course of the simulation
+///////////////////////////////////////////////////////////////////////////////////////
+
 //Declaring the functions defined after "main"
 void init                 ( real3d &state , real &dt , Fixed_data &fixed_data );
 void finalize             ( );
-void injection            ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
-void density_current      ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
-void gravity_waves        ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
-void thermal              ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
-void collision            ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
-void hydro_const_theta    ( real z                    , real &r , real &t );
-void hydro_const_bvfreq   ( real z , real bv_freq0    , real &r , real &t );
-real sample_ellipse_cosine( real x , real z , real amp , real x0 , real z0 , real xrad , real zrad );
+YAKL_INLINE void injection            ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
+YAKL_INLINE void density_current      ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
+YAKL_INLINE void gravity_waves        ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
+YAKL_INLINE void thermal              ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
+YAKL_INLINE void collision            ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht );
+YAKL_INLINE void hydro_const_theta    ( real z                    , real &r , real &t );
+YAKL_INLINE void hydro_const_bvfreq   ( real z , real bv_freq0    , real &r , real &t );
+YAKL_INLINE real sample_ellipse_cosine( real x , real z , real amp , real x0 , real z0 , real xrad , real zrad );
 void output               ( realConst3d state , real etime , int &num_out , Fixed_data const &fixed_data );
 void ncwrap               ( int ierr , int line );
 void perform_timestep     ( real3d const &state , real dt , int &direction_switch , Fixed_data const &fixed_data );
-void semi_discrete_step   ( realConst3d state_init , real3d const &state_forcing , real3d const &state_out , real dt , int dir , Fixed_data const &fixed_data );
+void semi_discrete_step   ( realConst3d state_init , real3d const &state_forcing , real3d const &state_out , real dt ,
+                            int dir , Fixed_data const &fixed_data );
 void compute_tendencies_x ( realConst3d state , real3d const &tend , real dt , Fixed_data const &fixed_data );
 void compute_tendencies_z ( realConst3d state , real3d const &tend , real dt , Fixed_data const &fixed_data );
 void set_halo_values_x    ( real3d const &state  , Fixed_data const &fixed_data );
@@ -79,7 +92,7 @@ int main(int argc, char **argv) {
     real3d state;
     real dt;                    //Model time step (seconds)
 
-    // init allocates state
+    // Init allocates the state and hydrostatic arrays hy_*
     init( state , dt , fixed_data );
 
     auto &masterproc = fixed_data.masterproc;
@@ -147,7 +160,7 @@ int main(int argc, char **argv) {
 // q*     = q_n + dt/3 * rhs(q_n)
 // q**    = q_n + dt/2 * rhs(q* )
 // q_n+1  = q_n + dt/1 * rhs(q**)
-void perform_timestep( real3d const &state , real dt , int &direction_switch , Fixed_data const &fixed_data ) {
+void perform_timestep( real3d const &state , real dt , int &direction_switch , Fixed_data const &fixed_data) {
   auto &nx                 = fixed_data.nx                ;
   auto &nz                 = fixed_data.nz                ;
 
@@ -200,23 +213,19 @@ void semi_discrete_step( realConst3d state_init , real3d const &state_forcing , 
     compute_tendencies_z(state_forcing,tend,dt,fixed_data);
   }
 
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 3 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
   //Apply the tendencies to the fluid state
-  for (int ll=0; ll<NUM_VARS; ll++) {
-    for (int k=0; k<nz; k++) {
-      for (int i=0; i<nx; i++) {
-        if (data_spec_int == DATA_SPEC_GRAVITY_WAVES) {
-          real x = (i_beg + i+0.5)*dx;
-          real z = (k_beg + k+0.5)*dz;
-          real wpert = sample_ellipse_cosine( x,z , 0.01 , xlen/8,1000., 500.,500. );
-          tend(ID_WMOM,k,i) += wpert*hy_dens_cell(hs+k);
-        }
-        state_out(ll,hs+k,hs+i) = state_init(ll,hs+k,hs+i) + dt * tend(ll,k,i);
-      }
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (k=0; k<nz; k++) {
+  //     for (i=0; i<nx; i++) {
+  parallel_for( SimpleBounds<3>(NUM_VARS,nz,nx) , YAKL_LAMBDA ( int ll, int k, int i ) {
+    if (data_spec_int == DATA_SPEC_GRAVITY_WAVES) {
+      real x = (i_beg + i+0.5)*dx;
+      real z = (k_beg + k+0.5)*dz;
+      real wpert = sample_ellipse_cosine( x,z , 0.01 , xlen/8,1000., 500.,500. );
+      tend(ID_WMOM,k,i) += wpert*hy_dens_cell(hs+k);
     }
-  }
+    state_out(ll,hs+k,hs+i) = state_init(ll,hs+k,hs+i) + dt * tend(ll,k,i);
+  });
 }
 
 
@@ -232,54 +241,61 @@ void compute_tendencies_x( realConst3d state , real3d const &tend , real dt , Fi
 
   real3d flux("flux",NUM_VARS,nz,nx+1);
 
-  //Compute the hyperviscosity coeficient
-  real hv_coef = -hv_beta * dx / (16*dt);
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
   //Compute fluxes in the x-direction for each cell
-  for (int k=0; k<nz; k++) {
-    for (int i=0; i<nx+1; i++) {
-      SArray<real,1,4> stencil;
-      SArray<real,1,NUM_VARS> d3_vals;
-      SArray<real,1,NUM_VARS> vals;
-      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
-      for (int ll=0; ll<NUM_VARS; ll++) {
-        for (int s=0; s < sten_size; s++) {
-          stencil(s) = state(ll,hs+k,i+s);
+  // for (k=0; k<nz; k++) {
+  //   for (i=0; i<nx+1; i++) {
+  int xdim = nx+1;
+  int xblocks = (xdim-1)/simd_len + 1;
+  parallel_for( SimpleBounds<2>(nz,xblocks) , YAKL_LAMBDA (int k, int iblk) {
+    SArray<Pack<real,simd_len>,1,4> stencil;
+    SArray<Pack<real,simd_len>,1,NUM_VARS> d3_vals;
+    SArray<Pack<real,simd_len>,1,NUM_VARS> vals;
+    //Compute the hyperviscosity coeficient
+    real hv_coef = -hv_beta * dx / (16*dt);
+
+    //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+    for (int ll=0; ll<NUM_VARS; ll++) {
+      for (int s=0; s < sten_size; s++) {
+        for (int ilane=0; ilane < simd_len; ilane++) {
+          int i = min( xdim-1 , iblk*simd_len + ilane );
+          stencil(s)(ilane) = state(ll,hs+k,i+s);
         }
-        //Fourth-order-accurate interpolation of the state
-        vals(ll) = -stencil(0)/12 + 7*stencil(1)/12 + 7*stencil(2)/12 - stencil(3)/12;
-        //First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
-        d3_vals(ll) = -stencil(0) + 3*stencil(1) - 3*stencil(2) + stencil(3);
       }
-
-      //Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
-      real r = vals(ID_DENS) + hy_dens_cell(hs+k);
-      real u = vals(ID_UMOM) / r;
-      real w = vals(ID_WMOM) / r;
-      real t = ( vals(ID_RHOT) + hy_dens_theta_cell(hs+k) ) / r;
-      real p = C0*pow((r*t),gamm);
-
-      //Compute the flux vector
-      flux(ID_DENS,k,i) = r*u     - hv_coef*d3_vals(ID_DENS);
-      flux(ID_UMOM,k,i) = r*u*u+p - hv_coef*d3_vals(ID_UMOM);
-      flux(ID_WMOM,k,i) = r*u*w   - hv_coef*d3_vals(ID_WMOM);
-      flux(ID_RHOT,k,i) = r*u*t   - hv_coef*d3_vals(ID_RHOT);
+      //Fourth-order-accurate interpolation of the state
+      vals(ll) = -stencil(0)/12 + 7*stencil(1)/12 + 7*stencil(2)/12 - stencil(3)/12;
+      //First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
+      d3_vals(ll) = -stencil(0) + 3*stencil(1) - 3*stencil(2) + stencil(3);
     }
-  }
 
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 3 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
+    //Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
+    Pack<real,simd_len> r = vals(ID_DENS) + hy_dens_cell(hs+k);
+    Pack<real,simd_len> u = vals(ID_UMOM) / r;
+    Pack<real,simd_len> w = vals(ID_WMOM) / r;
+    Pack<real,simd_len> t = ( vals(ID_RHOT) + hy_dens_theta_cell(hs+k) ) / r;
+    Pack<real,simd_len> p = C0*pow((r*t),gamm);
+
+    Pack<real,simd_len> f1 = r*u     - hv_coef*d3_vals(ID_DENS);
+    Pack<real,simd_len> f2 = r*u*u+p - hv_coef*d3_vals(ID_UMOM);
+    Pack<real,simd_len> f3 = r*u*w   - hv_coef*d3_vals(ID_WMOM);
+    Pack<real,simd_len> f4 = r*u*t   - hv_coef*d3_vals(ID_RHOT);
+
+    //Compute the flux vector
+    for (int ilane=0; ilane < simd_len; ilane++) {
+      int i = min(xdim-1 , iblk*simd_len + ilane);
+      flux(ID_DENS,k,i) = f1(ilane);
+      flux(ID_UMOM,k,i) = f2(ilane);
+      flux(ID_WMOM,k,i) = f3(ilane);
+      flux(ID_RHOT,k,i) = f4(ilane);
+    }
+  });
+
   //Use the fluxes to compute tendencies for each cell
-  for (int ll=0; ll<NUM_VARS; ll++) {
-    for (int k=0; k<nz; k++) {
-      for (int i=0; i<nx; i++) {
-        tend(ll,k,i) = -( flux(ll,k,i+1) - flux(ll,k,i) ) / dx;
-      }
-    }
-  }
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (k=0; k<nz; k++) {
+  //     for (i=0; i<nx; i++) {
+  parallel_for( SimpleBounds<3>(NUM_VARS,nz,nx) , YAKL_LAMBDA ( int ll, int k, int i ) {
+    tend(ll,k,i) = -( flux(ll,k,i+1) - flux(ll,k,i) ) / dx;
+  });
 }
 
 
@@ -296,61 +312,68 @@ void compute_tendencies_z( realConst3d state , real3d const &tend , real dt , Fi
 
   real3d flux("flux",NUM_VARS,nz+1,nx);
 
-  //Compute the hyperviscosity coeficient
-  real hv_coef = -hv_beta * dz / (16*dt);
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
   //Compute fluxes in the x-direction for each cell
-  for (int k=0; k<nz+1; k++) {
-    for (int i=0; i<nx; i++) {
-      SArray<real,1,4> stencil;
-      SArray<real,1,NUM_VARS> d3_vals;
-      SArray<real,1,NUM_VARS> vals;
-      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
-      for (int ll=0; ll<NUM_VARS; ll++) {
-        for (int s=0; s<sten_size; s++) {
-          stencil(s) = state(ll,k+s,hs+i);
+  // for (k=0; k<nz+1; k++) {
+  //   for (i=0; i<nx; i++) {
+  int xdim = nx+1;
+  int xblocks = (xdim-1)/simd_len + 1;
+  parallel_for( SimpleBounds<2>(nz+1,xblocks) , YAKL_LAMBDA (int k, int iblk) {
+    SArray<Pack<real,simd_len>,1,4> stencil;
+    SArray<Pack<real,simd_len>,1,NUM_VARS> d3_vals;
+    SArray<Pack<real,simd_len>,1,NUM_VARS> vals;
+    //Compute the hyperviscosity coeficient
+    real hv_coef = -hv_beta * dz / (16*dt);
+
+    //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+    for (int ll=0; ll<NUM_VARS; ll++) {
+      for (int s=0; s<sten_size; s++) {
+        for (int ilane = 0; ilane < simd_len; ilane++) {
+          int i = min( xdim-1 , iblk*simd_len + ilane );
+          stencil(s)(ilane) = state(ll,k+s,hs+i);
         }
-        //Fourth-order-accurate interpolation of the state
-        vals(ll) = -stencil(0)/12 + 7*stencil(1)/12 + 7*stencil(2)/12 - stencil(3)/12;
-        //First-order-accurate interpolation of the third spatial derivative of the state
-        d3_vals(ll) = -stencil(0) + 3*stencil(1) - 3*stencil(2) + stencil(3);
       }
-
-      //Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
-      real r = vals(ID_DENS) + hy_dens_int(k);
-      real u = vals(ID_UMOM) / r;
-      real w = vals(ID_WMOM) / r;
-      real t = ( vals(ID_RHOT) + hy_dens_theta_int(k) ) / r;
-      real p = C0*pow((r*t),gamm) - hy_pressure_int(k);
-      if (k == 0 || k == nz) {
-        w                = 0;
-        d3_vals(ID_DENS) = 0;
-      }
-
-      //Compute the flux vector with hyperviscosity
-      flux(ID_DENS,k,i) = r*w     - hv_coef*d3_vals(ID_DENS);
-      flux(ID_UMOM,k,i) = r*w*u   - hv_coef*d3_vals(ID_UMOM);
-      flux(ID_WMOM,k,i) = r*w*w+p - hv_coef*d3_vals(ID_WMOM);
-      flux(ID_RHOT,k,i) = r*w*t   - hv_coef*d3_vals(ID_RHOT);
+      //Fourth-order-accurate interpolation of the state
+      vals(ll) = -stencil(0)/12 + 7*stencil(1)/12 + 7*stencil(2)/12 - stencil(3)/12;
+      //First-order-accurate interpolation of the third spatial derivative of the state
+      d3_vals(ll) = -stencil(0) + 3*stencil(1) - 3*stencil(2) + stencil(3);
     }
-  }
+
+    //Compute density, u-wind, w-wind, potential temperature, and pressure (r,u,w,t,p respectively)
+    Pack<real,simd_len> r = vals(ID_DENS) + hy_dens_int(k);
+    Pack<real,simd_len> u = vals(ID_UMOM) / r;
+    Pack<real,simd_len> w = vals(ID_WMOM) / r;
+    Pack<real,simd_len> t = ( vals(ID_RHOT) + hy_dens_theta_int(k) ) / r;
+    Pack<real,simd_len> p = C0*pow((r*t),gamm) - hy_pressure_int(k);
+    if (k == 0 || k == nz) {
+      w                = 0;
+      d3_vals(ID_DENS) = 0;
+    }
+
+    Pack<real,simd_len> f1 = r*w     - hv_coef*d3_vals(ID_DENS);
+    Pack<real,simd_len> f2 = r*w*u   - hv_coef*d3_vals(ID_UMOM);
+    Pack<real,simd_len> f3 = r*w*w+p - hv_coef*d3_vals(ID_WMOM);
+    Pack<real,simd_len> f4 = r*w*t   - hv_coef*d3_vals(ID_RHOT);
+
+    //Compute the flux vector with hyperviscosity
+    for (int ilane = 0; ilane < simd_len; ilane++) {
+      int i = min( xdim-1 , iblk*simd_len + ilane );
+      flux(ID_DENS,k,i) = f1(ilane);
+      flux(ID_UMOM,k,i) = f2(ilane);
+      flux(ID_WMOM,k,i) = f3(ilane);
+      flux(ID_RHOT,k,i) = f4(ilane);
+    }
+  });
 
   //Use the fluxes to compute tendencies for each cell
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 3 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int ll=0; ll<NUM_VARS; ll++) {
-    for (int k=0; k<nz; k++) {
-      for (int i=0; i<nx; i++) {
-        tend(ll,k,i) = -( flux(ll,k+1,i) - flux(ll,k,i) ) / dz;
-        if (ll == ID_WMOM) {
-          tend(ll,k,i) -= state(ID_DENS,hs+k,hs+i)*grav;
-        }
-      }
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (k=0; k<nz; k++) {
+  //     for (i=0; i<nx; i++) {
+  parallel_for( SimpleBounds<3>(NUM_VARS,nz,nx) , YAKL_LAMBDA ( int ll, int k, int i ) {
+    tend(ll,k,i) = -( flux(ll,k+1,i) - flux(ll,k,i) ) / dz;
+    if (ll == ID_WMOM) {
+      tend(ll,k,i) -= state(ID_DENS,hs+k,hs+i)*grav;
     }
-  }
+  });
 }
 
 
@@ -366,41 +389,80 @@ void set_halo_values_x( real3d const &state , Fixed_data const &fixed_data ) {
   auto &hy_dens_cell       = fixed_data.hy_dens_cell      ;
   auto &hy_dens_theta_cell = fixed_data.hy_dens_theta_cell;
 
-  ////////////////////////////////////////////////////////////////////////
-  // TODO: EXCHANGE HALO VALUES WITH NEIGHBORING MPI TASKS
-  // (1) give    state(1:hs,1:nz,1:NUM_VARS)       to   my left  neighbor
-  // (2) receive state(1-hs:0,1:nz,1:NUM_VARS)     from my left  neighbor
-  // (3) give    state(nx-hs+1:nx,1:nz,1:NUM_VARS) to   my right neighbor
-  // (4) receive state(nx+1:nx+hs,1:nz,1:NUM_VARS) from my right neighbor
-  ////////////////////////////////////////////////////////////////////////
+  int ierr;
+  MPI_Request req_r[2], req_s[2];
+  MPI_Datatype type;
 
-  //////////////////////////////////////////////////////
-  // DELETE THE SERIAL CODE BELOW AND REPLACE WITH MPI
-  //////////////////////////////////////////////////////
-  for (int ll=0; ll<NUM_VARS; ll++) {
-    for (int k=0; k<nz; k++) {
-      state(ll,hs+k,0      ) = state(ll,hs+k,nx+hs-2);
-      state(ll,hs+k,1      ) = state(ll,hs+k,nx+hs-1);
-      state(ll,hs+k,nx+hs  ) = state(ll,hs+k,hs     );
-      state(ll,hs+k,nx+hs+1) = state(ll,hs+k,hs+1   );
-    }
+  if (std::is_same<real,float>::value) {
+    type = MPI_FLOAT;
+  } else {
+    type = MPI_DOUBLE;
   }
-  ////////////////////////////////////////////////////
+
+  real3d     sendbuf_l    ( "sendbuf_l" , NUM_VARS,nz,hs );  //Buffer to send data to the left MPI rank
+  real3d     sendbuf_r    ( "sendbuf_r" , NUM_VARS,nz,hs );  //Buffer to send data to the right MPI rank
+  real3d     recvbuf_l    ( "recvbuf_l" , NUM_VARS,nz,hs );  //Buffer to receive data from the left MPI rank
+  real3d     recvbuf_r    ( "recvbuf_r" , NUM_VARS,nz,hs );  //Buffer to receive data from the right MPI rank
+  real3dHost sendbuf_l_cpu( "sendbuf_l" , NUM_VARS,nz,hs );  //Buffer to send data to the left MPI rank (CPU copy)
+  real3dHost sendbuf_r_cpu( "sendbuf_r" , NUM_VARS,nz,hs );  //Buffer to send data to the right MPI rank (CPU copy)
+  real3dHost recvbuf_l_cpu( "recvbuf_l" , NUM_VARS,nz,hs );  //Buffer to receive data from the left MPI rank (CPU copy)
+  real3dHost recvbuf_r_cpu( "recvbuf_r" , NUM_VARS,nz,hs );  //Buffer to receive data from the right MPI rank (CPU copy)
+
+  //Prepost receives
+  ierr = MPI_Irecv(recvbuf_l_cpu.data(),hs*nz*NUM_VARS,type, left_rank,0,MPI_COMM_WORLD,&req_r[0]);
+  ierr = MPI_Irecv(recvbuf_r_cpu.data(),hs*nz*NUM_VARS,type,right_rank,1,MPI_COMM_WORLD,&req_r[1]);
+
+  //Pack the send buffers
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (k=0; k<nz; k++) {
+  //     for (s=0; s<hs; s++) {
+  parallel_for( SimpleBounds<3>(NUM_VARS,nz,hs) , YAKL_LAMBDA (int ll, int k, int s) {
+    sendbuf_l(ll,k,s) = state(ll,k+hs,hs+s);
+    sendbuf_r(ll,k,s) = state(ll,k+hs,nx+s);
+  });
+  yakl::fence();
+
+  // This will copy from GPU to host
+  sendbuf_l.deep_copy_to(sendbuf_l_cpu);
+  sendbuf_r.deep_copy_to(sendbuf_r_cpu);
+  yakl::fence();
+
+  //Fire off the sends
+  ierr = MPI_Isend(sendbuf_l_cpu.data(),hs*nz*NUM_VARS,type, left_rank,1,MPI_COMM_WORLD,&req_s[0]);
+  ierr = MPI_Isend(sendbuf_r_cpu.data(),hs*nz*NUM_VARS,type,right_rank,0,MPI_COMM_WORLD,&req_s[1]);
+
+  //Wait for receives to finish
+  ierr = MPI_Waitall(2,req_r,MPI_STATUSES_IGNORE);
+
+  // This will copy from host to GPU
+  recvbuf_l_cpu.deep_copy_to(recvbuf_l);
+  recvbuf_r_cpu.deep_copy_to(recvbuf_r);
+  yakl::fence();
+
+  //Unpack the receive buffers
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (k=0; k<nz; k++) {
+  //     for (s=0; s<hs; s++) {
+  parallel_for( SimpleBounds<3>(NUM_VARS,nz,hs) , YAKL_LAMBDA (int ll, int k, int s) {
+    state(ll,k+hs,s      ) = recvbuf_l(ll,k,s);
+    state(ll,k+hs,nx+hs+s) = recvbuf_r(ll,k,s);
+  });
+  yakl::fence();
+
+  //Wait for sends to finish
+  ierr = MPI_Waitall(2,req_s,MPI_STATUSES_IGNORE);
 
   if (data_spec_int == DATA_SPEC_INJECTION) {
     if (myrank == 0) {
-      /////////////////////////////////////////////////
-      // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-      /////////////////////////////////////////////////
-      for (int k=0; k<nz; k++) {
-        for (int i=0; i<hs; i++) {
-          real z = (k_beg + k+0.5)*dz;
-          if (abs(z-3*zlen/4) <= zlen/16) {
-            state(ID_UMOM,hs+k,i) = (state(ID_DENS,hs+k,i)+hy_dens_cell(hs+k)) * 50.;
-            state(ID_RHOT,hs+k,i) = (state(ID_DENS,hs+k,i)+hy_dens_cell(hs+k)) * 298. - hy_dens_theta_cell(hs+k);
-          }
+      // for (k=0; k<nz; k++) {
+      //   for (i=0; i<hs; i++) {
+      parallel_for( SimpleBounds<2>(nz,hs) , YAKL_LAMBDA (int k, int i) {
+        double z = (k_beg + k+0.5)*dz;
+        if (abs(z-3*zlen/4) <= zlen/16) {
+          state(ID_UMOM,hs+k,i) = (state(ID_DENS,hs+k,i)+hy_dens_cell(hs+k)) * 50.;
+          state(ID_RHOT,hs+k,i) = (state(ID_DENS,hs+k,i)+hy_dens_cell(hs+k)) * 298. - hy_dens_theta_cell(hs+k);
         }
-      }
+      });
     }
   }
 }
@@ -413,29 +475,26 @@ void set_halo_values_z( real3d const &state , Fixed_data const &fixed_data ) {
   auto &nz                 = fixed_data.nz                ;
   auto &hy_dens_cell       = fixed_data.hy_dens_cell      ;
   
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int ll=0; ll<NUM_VARS; ll++) {
-    for (int i=0; i<nx+2*hs; i++) {
-      if (ll == ID_WMOM) {
-        state(ll,0      ,i) = 0.;
-        state(ll,1      ,i) = 0.;
-        state(ll,nz+hs  ,i) = 0.;
-        state(ll,nz+hs+1,i) = 0.;
-      } else if (ll == ID_UMOM) {
-        state(ll,0      ,i) = state(ll,hs     ,i) / hy_dens_cell(hs     ) * hy_dens_cell(0      );
-        state(ll,1      ,i) = state(ll,hs     ,i) / hy_dens_cell(hs     ) * hy_dens_cell(1      );
-        state(ll,nz+hs  ,i) = state(ll,nz+hs-1,i) / hy_dens_cell(nz+hs-1) * hy_dens_cell(nz+hs  );
-        state(ll,nz+hs+1,i) = state(ll,nz+hs-1,i) / hy_dens_cell(nz+hs-1) * hy_dens_cell(nz+hs+1);
-      } else {
-        state(ll,0      ,i) = state(ll,hs     ,i);
-        state(ll,1      ,i) = state(ll,hs     ,i);
-        state(ll,nz+hs  ,i) = state(ll,nz+hs-1,i);
-        state(ll,nz+hs+1,i) = state(ll,nz+hs-1,i);
-      }
+  // for (ll=0; ll<NUM_VARS; ll++) {
+  //   for (i=0; i<nx+2*hs; i++) {
+  parallel_for( SimpleBounds<2>(NUM_VARS,nx+2*hs) , YAKL_LAMBDA (int ll, int i) {
+    if (ll == ID_WMOM) {
+      state(ll,0      ,i) = 0.;
+      state(ll,1      ,i) = 0.;
+      state(ll,nz+hs  ,i) = 0.;
+      state(ll,nz+hs+1,i) = 0.;
+    } else if (ll == ID_UMOM) {
+      state(ll,0      ,i) = state(ll,hs     ,i) / hy_dens_cell(hs     ) * hy_dens_cell(0      );
+      state(ll,1      ,i) = state(ll,hs     ,i) / hy_dens_cell(hs     ) * hy_dens_cell(1      );
+      state(ll,nz+hs  ,i) = state(ll,nz+hs-1,i) / hy_dens_cell(nz+hs-1) * hy_dens_cell(nz+hs  );
+      state(ll,nz+hs+1,i) = state(ll,nz+hs-1,i) / hy_dens_cell(nz+hs-1) * hy_dens_cell(nz+hs+1);
+    } else {
+      state(ll,0      ,i) = state(ll,hs     ,i);
+      state(ll,1      ,i) = state(ll,hs     ,i);
+      state(ll,nz+hs  ,i) = state(ll,nz+hs-1,i);
+      state(ll,nz+hs+1,i) = state(ll,nz+hs-1,i);
     }
-  }
+  });
 }
 
 
@@ -449,25 +508,18 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
   auto &nranks             = fixed_data.nranks            ;
   auto &myrank             = fixed_data.myrank            ;
   auto &masterproc         = fixed_data.masterproc        ;
-  int ierr;
+  int  ierr;
 
-  /////////////////////////////////////////////////////////////
-  // BEGIN MPI DUMMY SECTION
-  // TODO: (1) GET NUMBER OF MPI RANKS
-  //       (2) GET MY MPI RANK ID (RANKS ARE ZERO-BASED INDEX)
-  //       (3) COMPUTE MY BEGINNING "I" INDEX (1-based index)
-  //       (4) COMPUTE HOW MANY X-DIRECTION CELLS MY RANK HAS
-  //       (5) FIND MY LEFT AND RIGHT NEIGHBORING RANK IDs
-  /////////////////////////////////////////////////////////////
-  nranks = 1;
-  myrank = 0;
-  i_beg = 0;
-  nx = nx_glob;
-  left_rank = 0;
-  right_rank = 0;
-  //////////////////////////////////////////////
-  // END MPI DUMMY SECTION
-  //////////////////////////////////////////////
+  ierr = MPI_Comm_size(MPI_COMM_WORLD,&nranks);
+  ierr = MPI_Comm_rank(MPI_COMM_WORLD,&myrank);
+  real nper = ( (double) nx_glob ) / nranks;
+  i_beg = round( nper* (myrank)    );
+  int i_end = round( nper*((myrank)+1) )-1;
+  nx = i_end - i_beg + 1;
+  left_rank  = myrank - 1;
+  if (left_rank == -1) left_rank = nranks-1;
+  right_rank = myrank + 1;
+  if (right_rank == nranks) right_rank = 0;
 
   //Vertical direction isn't MPI-ized, so the rank's local values = the global values
   k_beg = 0;
@@ -475,7 +527,7 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
   masterproc = (myrank == 0);
 
   //Allocate the model data
-  state              = real3d( "state"     , NUM_VARS,nz+2*hs,nx+2*hs);
+  state              = real3d( "state" , NUM_VARS,nz+2*hs,nx+2*hs);
 
   //Define the maximum stable time step based on an assumed maximum wind speed
   dt = min(dx,dz) / max_speed * cfl;
@@ -505,39 +557,36 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
   //////////////////////////////////////////////////////////////////////////
   // Initialize the cell-averaged fluid state via Gauss-Legendre quadrature
   //////////////////////////////////////////////////////////////////////////
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int k=0; k<nz+2*hs; k++) {
-    for (int i=0; i<nx+2*hs; i++) {
-      //Initialize the state to zero
-      for (int ll=0; ll<NUM_VARS; ll++) {
-        state(ll,k,i) = 0.;
-      }
-      //Use Gauss-Legendre quadrature to initialize a hydrostatic balance + temperature perturbation
-      for (int kk=0; kk<nqpoints; kk++) {
-        for (int ii=0; ii<nqpoints; ii++) {
-          //Compute the x,z location within the global domain based on cell and quadrature index
-          real x = (i_beg + i-hs+0.5)*dx + (qpoints(ii)-0.5)*dx;
-          real z = (k_beg + k-hs+0.5)*dz + (qpoints(kk)-0.5)*dz;
-          real r, u, w, t, hr, ht;
+  // for (k=0; k<nz+2*hs; k++) {
+  //   for (i=0; i<nx+2*hs; i++) {
+  parallel_for( SimpleBounds<2>(nz+2*hs,nx+2*hs) , YAKL_LAMBDA (int k, int i) {
+    //Initialize the state to zero
+    for (int ll=0; ll<NUM_VARS; ll++) {
+      state(ll,k,i) = 0.;
+    }
+    //Use Gauss-Legendre quadrature to initialize a hydrostatic balance + temperature perturbation
+    for (int kk=0; kk<nqpoints; kk++) {
+      for (int ii=0; ii<nqpoints; ii++) {
+        //Compute the x,z location within the global domain based on cell and quadrature index
+        real x = (i_beg + i-hs+0.5)*dx + (qpoints(ii)-0.5)*dx;
+        real z = (k_beg + k-hs+0.5)*dz + (qpoints(kk)-0.5)*dz;
+        real r, u, w, t, hr, ht;
 
-          //Set the fluid state based on the user's specification
-          if (data_spec_int == DATA_SPEC_COLLISION      ) { collision      (x,z,r,u,w,t,hr,ht); }
-          if (data_spec_int == DATA_SPEC_THERMAL        ) { thermal        (x,z,r,u,w,t,hr,ht); }
-          if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (x,z,r,u,w,t,hr,ht); }
-          if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(x,z,r,u,w,t,hr,ht); }
-          if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (x,z,r,u,w,t,hr,ht); }
+        //Set the fluid state based on the user's specification
+        if (data_spec_int == DATA_SPEC_COLLISION      ) { collision      (x,z,r,u,w,t,hr,ht); }
+        if (data_spec_int == DATA_SPEC_THERMAL        ) { thermal        (x,z,r,u,w,t,hr,ht); }
+        if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (x,z,r,u,w,t,hr,ht); }
+        if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(x,z,r,u,w,t,hr,ht); }
+        if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (x,z,r,u,w,t,hr,ht); }
 
-          //Store into the fluid state array
-          state(ID_DENS,k,i) += r                         * qweights(ii)*qweights(kk);
-          state(ID_UMOM,k,i) += (r+hr)*u                  * qweights(ii)*qweights(kk);
-          state(ID_WMOM,k,i) += (r+hr)*w                  * qweights(ii)*qweights(kk);
-          state(ID_RHOT,k,i) += ( (r+hr)*(t+ht) - hr*ht ) * qweights(ii)*qweights(kk);
-        }
+        //Store into the fluid state array
+        state(ID_DENS,k,i) += r                         * qweights(ii)*qweights(kk);
+        state(ID_UMOM,k,i) += (r+hr)*u                  * qweights(ii)*qweights(kk);
+        state(ID_WMOM,k,i) += (r+hr)*w                  * qweights(ii)*qweights(kk);
+        state(ID_RHOT,k,i) += ( (r+hr)*(t+ht) - hr*ht ) * qweights(ii)*qweights(kk);
       }
     }
-  }
+  });
 
   real1d hy_dens_cell      ("hy_dens_cell      ",nz+2*hs);
   real1d hy_dens_theta_cell("hy_dens_theta_cell",nz+2*hs);
@@ -546,10 +595,8 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
   real1d hy_pressure_int   ("hy_pressure_int   ",nz+1);
 
   //Compute the hydrostatic background state over vertical cell averages
-  /////////////////////////////////////////////////
-  // TODO: MAKE THIS LOOP A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int k=0; k<nz+2*hs; k++) {
+  // for (int k=0; k<nz+2*hs; k++) {
+  parallel_for( nz+2*hs , YAKL_LAMBDA (int k) {
     hy_dens_cell      (k) = 0.;
     hy_dens_theta_cell(k) = 0.;
     for (int kk=0; kk<nqpoints; kk++) {
@@ -564,13 +611,10 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
       hy_dens_cell      (k) = hy_dens_cell      (k) + hr    * qweights(kk);
       hy_dens_theta_cell(k) = hy_dens_theta_cell(k) + hr*ht * qweights(kk);
     }
-  }
-
+  });
   //Compute the hydrostatic background state at vertical cell interfaces
-  /////////////////////////////////////////////////
-  // TODO: MAKE THIS LOOP A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int k=0; k<nz+1; k++) {
+  // for (int k=0; k<nz+1; k++) {
+  parallel_for( nz+1 , YAKL_LAMBDA (int k) {
     real z = (k_beg + k)*dz;
     real r, u, w, t, hr, ht;
     if (data_spec_int == DATA_SPEC_COLLISION      ) { collision      (0.,z,r,u,w,t,hr,ht); }
@@ -581,7 +625,7 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
     hy_dens_int      (k) = hr;
     hy_dens_theta_int(k) = hr*ht;
     hy_pressure_int  (k) = C0*pow((hr*ht),gamm);
-  }
+  });
 
   fixed_data.hy_dens_cell       = realConst1d(hy_dens_cell      );
   fixed_data.hy_dens_theta_cell = realConst1d(hy_dens_theta_cell);
@@ -595,7 +639,7 @@ void init( real3d &state , real &dt , Fixed_data &fixed_data ) {
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void injection( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
+YAKL_INLINE void injection( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
   hydro_const_theta(z,hr,ht);
   r = 0.;
   t = 0.;
@@ -608,7 +652,7 @@ void injection( real x , real z , real &r , real &u , real &w , real &t , real &
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void density_current( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
+YAKL_INLINE void density_current( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
   hydro_const_theta(z,hr,ht);
   r = 0.;
   t = 0.;
@@ -621,7 +665,7 @@ void density_current( real x , real z , real &r , real &u , real &w , real &t , 
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void gravity_waves ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
+YAKL_INLINE void gravity_waves ( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
   hydro_const_bvfreq(z,0.02,hr,ht);
   r = 0.;
   t = 0.;
@@ -634,7 +678,7 @@ void gravity_waves ( real x , real z , real &r , real &u , real &w , real &t , r
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void thermal( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
+YAKL_INLINE void thermal( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
   hydro_const_theta(z,hr,ht);
   r = 0.;
   t = 0.;
@@ -648,7 +692,7 @@ void thermal( real x , real z , real &r , real &u , real &w , real &t , real &hr
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void collision( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
+YAKL_INLINE void collision( real x , real z , real &r , real &u , real &w , real &t , real &hr , real &ht ) {
   hydro_const_theta(z,hr,ht);
   r = 0.;
   t = 0.;
@@ -662,7 +706,7 @@ void collision( real x , real z , real &r , real &u , real &w , real &t , real &
 //Establish hydrstatic balance using constant potential temperature (thermally neutral atmosphere)
 //z is the input coordinate
 //r and t are the output background hydrostatic density and potential temperature
-void hydro_const_theta( real z , real &r , real &t ) {
+YAKL_INLINE void hydro_const_theta( real z , real &r , real &t ) {
   const real theta0 = 300.;  //Background potential temperature
   const real exner0 = 1.;    //Surface-level Exner pressure
   //Establish hydrostatic balance first using Exner pressure
@@ -678,7 +722,7 @@ void hydro_const_theta( real z , real &r , real &t ) {
 //z is the input coordinate
 //bv_freq0 is the constant Brunt-Vaisala frequency
 //r and t are the output background hydrostatic density and potential temperature
-void hydro_const_bvfreq( real z , real bv_freq0 , real &r , real &t ) {
+YAKL_INLINE void hydro_const_bvfreq( real z , real bv_freq0 , real &r , real &t ) {
   const real theta0 = 300.;  //Background potential temperature
   const real exner0 = 1.;    //Surface-level Exner pressure
   t = theta0 * exp( bv_freq0*bv_freq0 / grav * z );                                    //Pot temp at z
@@ -692,7 +736,7 @@ void hydro_const_bvfreq( real z , real bv_freq0 , real &r , real &t ) {
 //Sample from an ellipse of a specified center, radius, and amplitude at a specified location
 //x and z are input coordinates
 //amp,x0,z0,xrad,zrad are input amplitude, center, and radius of the ellipse
-real sample_ellipse_cosine( real x , real z , real amp , real x0 , real z0 , real xrad , real zrad ) {
+YAKL_INLINE real sample_ellipse_cosine( real x , real z , real amp , real x0 , real z0 , real xrad , real zrad ) {
   //Compute distance from bubble center
   real dist = sqrt( ((x-x0)/xrad)*((x-x0)/xrad) + ((z-z0)/zrad)*((z-z0)/zrad) ) * pi / 2.;
   //If the distance from bubble center is less than the radius, create a cos**2 profile
@@ -718,7 +762,6 @@ void output( realConst3d state , real etime , int &num_out , Fixed_data const &f
 
   int ncid, t_dimid, x_dimid, z_dimid, dens_varid, uwnd_varid, wwnd_varid, theta_varid, t_varid, dimids[3];
   MPI_Offset st1[1], ct1[1], st3[3], ct3[3];
-  //Temporary arrays to hold density, u-wind, w-wind, and potential temperature (theta)
   //Inform the user
   if (masterproc) { printf("*** OUTPUT ***\n"); }
   //Allocate some (big) temp arrays
@@ -757,25 +800,23 @@ void output( realConst3d state , real etime , int &num_out , Fixed_data const &f
   }
 
   //Store perturbed values in the temp arrays for output
-  /////////////////////////////////////////////////
-  // TODO: MAKE THESE 2 LOOPS A PARALLEL_FOR
-  /////////////////////////////////////////////////
-  for (int k=0; k<nz; k++) {
-    for (int i=0; i<nx; i++) {
-      dens (k,i) = state(ID_DENS,hs+k,hs+i);
-      uwnd (k,i) = state(ID_UMOM,hs+k,hs+i) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) );
-      wwnd (k,i) = state(ID_WMOM,hs+k,hs+i) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) );
-      theta(k,i) = ( state(ID_RHOT,hs+k,hs+i) + hy_dens_theta_cell(hs+k) ) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) ) - hy_dens_theta_cell(hs+k) / hy_dens_cell(hs+k);
-    }
-  }
+  // for (k=0; k<nz; k++) {
+  //   for (i=0; i<nx; i++) {
+  parallel_for( SimpleBounds<2>(nz,nx) , YAKL_LAMBDA (int k, int i) {
+    dens (k,i) = state(ID_DENS,hs+k,hs+i);
+    uwnd (k,i) = state(ID_UMOM,hs+k,hs+i) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) );
+    wwnd (k,i) = state(ID_WMOM,hs+k,hs+i) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) );
+    theta(k,i) = ( state(ID_RHOT,hs+k,hs+i) + hy_dens_theta_cell(hs+k) ) / ( hy_dens_cell(hs+k) + state(ID_DENS,hs+k,hs+i) ) - hy_dens_theta_cell(hs+k) / hy_dens_cell(hs+k);
+  });
+  yakl::fence();
 
   //Write the grid data to file with all the processes writing collectively
   st3[0] = num_out; st3[1] = k_beg; st3[2] = i_beg;
   ct3[0] = 1      ; ct3[1] = nz   ; ct3[2] = nx   ;
-  ncwrap( ncmpi_put_vara_double_all( ncid ,  dens_varid , st3 , ct3 , dens.data()  ) , __LINE__ );
-  ncwrap( ncmpi_put_vara_double_all( ncid ,  uwnd_varid , st3 , ct3 , uwnd.data()  ) , __LINE__ );
-  ncwrap( ncmpi_put_vara_double_all( ncid ,  wwnd_varid , st3 , ct3 , wwnd.data()  ) , __LINE__ );
-  ncwrap( ncmpi_put_vara_double_all( ncid , theta_varid , st3 , ct3 , theta.data() ) , __LINE__ );
+  ncwrap( ncmpi_put_vara_double_all( ncid ,  dens_varid , st3 , ct3 , dens .createHostCopy().data() ) , __LINE__ );
+  ncwrap( ncmpi_put_vara_double_all( ncid ,  uwnd_varid , st3 , ct3 , uwnd .createHostCopy().data() ) , __LINE__ );
+  ncwrap( ncmpi_put_vara_double_all( ncid ,  wwnd_varid , st3 , ct3 , wwnd .createHostCopy().data() ) , __LINE__ );
+  ncwrap( ncmpi_put_vara_double_all( ncid , theta_varid , st3 , ct3 , theta.createHostCopy().data() ) , __LINE__ );
 
   //Only the master process needs to write the elapsed time
   //Begin "independent" write mode
@@ -813,28 +854,32 @@ void finalize() {
 
 
 //Compute reduced quantities for error checking without resorting to the "ncdiff" tool
-void reductions( realConst3d state , double &mass , double &te , Fixed_data const &fixed_data ) {
+void reductions( realConst3d state, double &mass , double &te , Fixed_data const &fixed_data ) {
   auto &nx                 = fixed_data.nx                ;
   auto &nz                 = fixed_data.nz                ;
   auto &hy_dens_cell       = fixed_data.hy_dens_cell      ;
   auto &hy_dens_theta_cell = fixed_data.hy_dens_theta_cell;
 
-  mass = 0;
-  te   = 0;
-  for (int k=0; k<nz; k++) {
-    for (int i=0; i<nx; i++) {
-      double r  =   state(ID_DENS,hs+k,hs+i) + hy_dens_cell(hs+k);             // Density
-      double u  =   state(ID_UMOM,hs+k,hs+i) / r;                              // U-wind
-      double w  =   state(ID_WMOM,hs+k,hs+i) / r;                              // W-wind
-      double th = ( state(ID_RHOT,hs+k,hs+i) + hy_dens_theta_cell(hs+k) ) / r; // Potential Temperature (theta)
-      double p  = C0*pow(r*th,gamm);                               // Pressure
-      double t  = th / pow(p0/p,rd/cp);                            // Temperature
-      double ke = r*(u*u+w*w);                                     // Kinetic Energy
-      double ie = r*cv*t;                                          // Internal Energy
-      mass += r        *dx*dz; // Accumulate domain mass
-      te   += (ke + ie)*dx*dz; // Accumulate domain total energy
-    }
-  }
+  doub2d mass2d("mass2d",nz,nx);
+  doub2d te2d  ("te2d  ",nz,nx);
+
+  // for (k=0; k<nz; k++) {
+  //   for (i=0; i<nx; i++) {
+  parallel_for( SimpleBounds<2>(nz,nx) , YAKL_LAMBDA (int k, int i) {
+    double r  =   state(ID_DENS,hs+k,hs+i) + hy_dens_cell(hs+k);             // Density
+    double u  =   state(ID_UMOM,hs+k,hs+i) / r;                              // U-wind
+    double w  =   state(ID_WMOM,hs+k,hs+i) / r;                              // W-wind
+    double th = ( state(ID_RHOT,hs+k,hs+i) + hy_dens_theta_cell(hs+k) ) / r; // Potential Temperature (theta)
+    double p  = C0*pow(r*th,gamm);                               // Pressure
+    double t  = th / pow(p0/p,rd/cp);                            // Temperature
+    double ke = r*(u*u+w*w);                                     // Kinetic Energy
+    double ie = r*cv*t;                                          // Internal Energy
+    mass2d(k,i) = r        *dx*dz; // Accumulate domain mass
+    te2d  (k,i) = (ke + ie)*dx*dz; // Accumulate domain total energy
+  });
+  mass = yakl::intrinsics::sum( mass2d );
+  te   = yakl::intrinsics::sum( te2d   );
+
   double glob[2], loc[2];
   loc[0] = mass;
   loc[1] = te;

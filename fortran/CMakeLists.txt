@@ -1,7 +1,9 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.0)
 project(miniWeather Fortran)
 
 enable_testing()
+
+include(utils.cmake)
 
 
 ############################################################
@@ -42,7 +44,7 @@ endif()
 if ("${CMAKE_Fortran_COMPILER_ID}" STREQUAL "GNU")
   SET(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -ffree-line-length-none")
 endif()
-if ("${CMAKE_Fortran_COMPILER_ID}" STREQUAL "PGI")
+if ("${CMAKE_Fortran_COMPILER_ID}" STREQUAL "PGI" OR "${CMAKE_Fortran_COMPILER_ID}" STREQUAL "NVHPC" )
   SET(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -Mextend")
 endif()
 SET(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} ${FFLAGS}")
@@ -111,42 +113,11 @@ endif()
 
 
 ############################################################
-## Check to see if the compiler is OpenACC-capable
+## Compile the MPI + OpenACC version
 ############################################################
-# If user didn't specify an OpenACC-capable compiler list, then create one
-if ("${OPENACC_LIST}" STREQUAL "")
-  SET(OPENACC_LIST GNU PGI)
-  MESSAGE(STATUS "OpenACC-capable list is: ${OPENACC_LIST}")
-endif()
-
-# Check compiler against openacc-capable list
-SET(DO_OPENACC FALSE)
-list(FIND OPENACC_LIST ${CMAKE_Fortran_COMPILER_ID} _ind)
-if( ${_ind} GREATER -1 )
-  SET(DO_OPENACC TRUE)
-  # GNU is only openacc-capable with 8.0 onward
-  if ("${CMAKE_Fortran_COMPILER_ID}" STREQUAL "GNU" AND ${CMAKE_Fortran_COMPILER_VERSION} LESS 8 )
-    MESSAGE(STATUS "WARNING: GNU can only compile OpenACC code with versions >= 8.0. Not compiling OpenACC code.")
-    SET(DO_OPENACC FALSE)
-  endif()
-  # If OPENACC_FLAGS isn't set, then do not compile the openacc code
-  if ("${OPENACC_FLAGS}" STREQUAL "")
-    MESSAGE(STATUS "WARNING: OPENACC_FLAGS CMake variable must be set to compile OpenACC code.")
-    MESSAGE(STATUS "    Add -DOPENACC_FLAGS=\"...\" to your cmake configure line to enable OpenACC compilation.")
-    SET(DO_OPENACC FALSE)
-  endif()
-endif()
-
-
+determine_openacc()
 if (${DO_OPENACC})
-  MESSAGE(STATUS "Compiling OpenACC code with ${CMAKE_Fortran_COMPILER_ID} ${CMAKE_Fortran_COMPILER_VERSION} using the flags: ${OPENACC_FLAGS}")
-  ############################################################
-  ## Compile the MPI + OpenACC version
-  ############################################################
   if ("${OPENACC_LINK_FLAGS}" STREQUAL "")
-    MESSAGE(STATUS "WARNING: OPENACC_LINK_FLAGS CMake variable not specified. ")
-    MESSAGE(STATUS "    Using OPENACC_FLAGS in place of OPENACC_LINK_FLAGS in the link phase. ")
-    MESSAGE(STATUS "    Add -DOPENACC_LINK_FLAGS to change this behavior. ")
     SET(OPENACC_LINK_FLAGS ${OPENACC_FLAGS})
   endif()
 
@@ -163,48 +134,16 @@ if (${DO_OPENACC})
   target_link_libraries(openacc_test "${_LIBS}")
 
   add_test(NAME OPENACC_TEST COMMAND ./check_output.sh ./openacc_test 1e-13 4.5e-5 ) 
-else() 
-  MESSAGE(STATUS "WARNING: OpenACC code will not be compiled.")
 endif()
+
 
 
 ############################################################
-## Check to see if the compiler is OpenMP-offload-capable
+## Compile the MPI + OpenMP4.5 version
 ############################################################
-# If user didn't specify an OpenMP4.5-capable compiler list, then create one
-if ("${OPENMP45_LIST}" STREQUAL "")
-  SET(OPENMP45_LIST XL GNU)
-  MESSAGE(STATUS "OpenMP4.5-capable list is: ${OPENMP45_LIST}")
-endif()
-
-# Check compiler against openmp4.5-capable list
-SET(DO_OPENMP45 FALSE)
-list(FIND OPENMP45_LIST ${CMAKE_Fortran_COMPILER_ID} _ind)
-if( ${_ind} GREATER -1 )
-  SET(DO_OPENMP45 TRUE)
-  # GNU is only openmp4.5-capable with 8.0 onward
-  if ("${CMAKE_Fortran_COMPILER_ID}" STREQUAL "GNU" AND ${CMAKE_Fortran_COMPILER_VERSION} LESS 8)
-    MESSAGE(WARNING "WARNING: GNU can only compile OpenMP4.5 code with versions >= 8.0"
-                    "Not compiling OpenMP4.5 code.")
-    SET(DO_OPENMP45 FALSE)
-  endif()
-  # If OPENMP45_FLAGS isn't set, then do not compile the openmp4.5 code
-  if ("${OPENMP45_FLAGS}" STREQUAL "")
-    MESSAGE(WARNING "WARNING: OPENMP45_FLAGS CMake variable must be set to compile OpenMP4.5 code."
-                    "add -DOPENMP45_FLAGS=\"...\" to your cmake configure line to enable OpenMP4.5 compilation.")
-    SET(DO_OPENMP45 FALSE)
-  endif()
-endif()
-
+determine_openmp45()
 if (${DO_OPENMP45})
-  MESSAGE(STATUS "Compiling OpenMP45 code with ${CMAKE_Fortran_COMPILER_ID} ${CMAKE_Fortran_COMPILER_VERSION} using the flags: ${OPENMP45_FLAGS}")
-  ############################################################
-  ## Compile the MPI + OpenMP4.5 version
-  ############################################################
   if ("${OPENMP45_LINK_FLAGS}" STREQUAL "")
-    MESSAGE(STATUS "WARNING: OPENMP45_LINK_FLAGS CMake variable not specified. ")
-    MESSAGE(STATUS "    Using OPENMP45_FLAGS in place of OPENMP45_LINK_FLAGS in the link phase. ")
-    MESSAGE(STATUS "    Add -DOPENMP45_LINK_FLAGS to change this behavior. ")
     SET(OPENMP45_LINK_FLAGS ${OPENMP45_FLAGS})
   endif()
 
@@ -227,8 +166,32 @@ if (${DO_OPENMP45})
   endif()
 
   add_test(NAME OPENMP45_TEST COMMAND ./check_output.sh ./openmp45_test 1e-13 4.5e-5 ) 
-else() 
-  MESSAGE(STATUS "WARNING: OpenMP4.5 code will not be compiled.")
+endif()
+
+
+
+############################################################
+## Compile the MPI + do concurrent version
+############################################################
+determine_do_concurrent()
+if (${DO_DO_CONCURRENT})
+  if ("${DO_CONCURRENT_LINK_FLAGS}" STREQUAL "")
+    SET(DO_CONCURRENT_LINK_FLAGS ${DO_CONCURRENT_FLAGS})
+  endif()
+
+  add_executable(do_concurrent miniWeather_mpi_do_concurrent.F90)
+  target_include_directories(do_concurrent PUBLIC ${PNETCDF_PATH}/include)
+  set_target_properties(do_concurrent PROPERTIES COMPILE_FLAGS "${EXE_DEFS} ${DO_CONCURRENT_FLAGS}")
+  set(_LIBS "-L${PNETCDF_PATH}/lib -lpnetcdf ${DO_CONCURRENT_LINK_FLAGS} ${LDFLAGS}")
+  string(STRIP "${_LIBS}" _LIBS)
+  target_link_libraries(do_concurrent "${_LIBS}")
+
+  add_executable(do_concurrent_test miniWeather_mpi_do_concurrent.F90)
+  target_include_directories(do_concurrent_test PUBLIC ${PNETCDF_PATH}/include)
+  set_target_properties(do_concurrent_test PROPERTIES COMPILE_FLAGS "${TEST_DEFS} ${DO_CONCURRENT_FLAGS}")
+  target_link_libraries(do_concurrent_test "${_LIBS}")
+
+  add_test(NAME DO_CONCURRENT_TEST COMMAND ./check_output.sh ./do_concurrent_test 1e-13 4.5e-5 ) 
 endif()
 
 
