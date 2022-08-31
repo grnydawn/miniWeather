@@ -164,7 +164,8 @@ class LocalDomain():
         # create file
         if self.is_master():
 
-            self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+            #self.slabs = pyslabs.master_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+            self.slabs = pyslabs.master_open("./output", mode="w")
 
             # only master create dimension
             xdim = self.slabs.define_dim("x", length=self.nx_glob, desc="X-dimension")
@@ -183,7 +184,7 @@ class LocalDomain():
 
         else:
             # wait master
-            self.slabs = pyslabs.parallel_open("/gpfs/alpine/cli133/scratch/grnydawn/output", mode="w")
+            self.slabs = pyslabs.parallel_open("./output", mode="wb")
 
             # get to ndarray dimension
             self.vdens = self.slabs.get_var("dens")

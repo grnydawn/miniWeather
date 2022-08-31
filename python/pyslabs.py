@@ -63,7 +63,7 @@ class Variable():
 """
 
         if isinstance(start, (list, tuple)):
-            _start = [self._intstr(s)) for s in start]
+            _start = [self._intstr(s) for s in start]
 
         else:
             _start = [self._intstr(start)]
@@ -142,7 +142,7 @@ class SimpleParallelDataFormatWriter():
         self.configpath = config
         self.archive = archive
 
-        with io.open(self.configpath, "r") as fp:
+        with io.open(self.configpath, "rb") as fp:
             self.config = pickle.load(fp)
 
         if mode == "r":
@@ -177,7 +177,7 @@ class MasterSimpleParallelDataFormatWriter(SimpleParallelDataFormatWriter):
             fp.flush()
             os.fsync(fp.fileno())
        
-    def _create_labeldir(self, name, label)
+    def _create_labeldir(self, name, label):
 
         labelroot = os.path.join(self.root, __LABEL__)
         labeldir = os.path.join(labelroot, name)
@@ -201,7 +201,7 @@ class MasterSimpleParallelDataFormatWriter(SimpleParallelDataFormatWriter):
 
         labeldir = self._create_labeldir(name, label)
 
-        dim = {"length": length, "desc": desc, "labeldir"=labeldir,
+        dim = {"length": length, "desc": desc, "labeldir":labeldir,
                 "is_stream": False}
         self.config["dims"][name] = dim
 
@@ -408,7 +408,7 @@ def parallel_open(path, mode="r", archive=True):
  
     start = time.time()
     while time.time() - start < _MAX_OPEN_WAIT:
-        with io.open(config, "r") as fp:
+        with io.open(config, "rb") as fp:
             cfg = pickle.load(fp)
             if cfg["__control__"]["master"] is None:
                 time.sleep(0.1)
